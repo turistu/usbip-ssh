@@ -32,27 +32,26 @@ exec /path/to/usbip-ssh verbose=1 daemon root@raspberry-pi Telink
 The `daemon` option will cause it to use `syslog(3)` instead of stderr and
 to keep trying (if e.g. the device/remote machine is not accessible, the device
 was plugged out, the connection was broken, etc), but spacing out the retries
-depending on how much the script has successfully run.
+depending on how long the script has successfully run.
 
 #### How does USB/IP work
 
 Both the `usbip_host` driver (on the exporting/remote device) and `vhci_hdc`
 (on the local/importing device) work by tunneling the USB protocol over a socket
-file descriptor passed from a userland process; despite the "IP" in "USB/IP",
-the socket can be *any* kind of *stream* socket, including a unix domain socket
+file descriptor passed by a userland process; despite the "IP" in "USB/IP",
+the socket can be *any* kind of stream socket, including a unix domain socket
 created with `socketpair(2)`.
 
-#### Why this script sucks so much
+#### Why this script has to suck so much then
 
-Despite it being theoretically easy to use any kind of medium for USB/IP (not
-just open tcp connections over a "secure" network), the ineptness of the ssh
-protocol (and the programs implementing it) makes everything much harder than
-it has to be: ssh is neither able to forward simple file descriptors, nor use
-a unix domain socket for the stdin/out of the remote program (the only options
-being a pair of pipes or a pseudo-terminal).
+Despite it being theoretically easy to use any reliable transport protocol for
+USB/IP (not just open tcp connections on a "secure" lan), limitations in ssh
+make everything much harder than it has to be: ssh is not able to forward simple
+file descriptors, nor use a unix domain socket for the stdin/out of the remote
+program (the only options being a pair of pipes or a pseudo-terminal).
 
-So this script had to use ssh's "connection forwarding" mechanism, which turned
-everything into a racy bloody mess, with temporary directories (which have to
-removed after use), master and slave ssh commands, and extra dummy processes
-which listen and connect to sockets.
-
+The only way to access ssh's "channel" abstraction is by setting up a TCP port
+or unix socket forwarding, and having to use that turns everything into
+a bloody racy mess of master and slave ssh commands, temporary directories and
+socket files which have to be cleaned up, and extra processes which connect
+and listen to them and race against each other.

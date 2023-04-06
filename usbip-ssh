@@ -90,11 +90,15 @@ sub xtmpdir {
 
 ###############################################
 
+use constant {
+	LOW => 1, FULL => 2, HIGH => 3, SUPER => 5, SUPER_PLUS => 6,
+	SDEV_ST_AVAILABLE => 1, SDEV_ST_USED => 2, VDEV_ST_NULL => 4,
+};
 sub remote_attach {
 	my ($sockfd, $busid) = @_;
 	my $status = readfile "$drivers/usbip-host/$busid/usbip_status";
-	if($status != 1){ # 1 = SDEV_ST_AVAILABLE
-		if($status == 2){ # 2 = SDEV_ST_USED
+	if($status != SDEV_ST_AVAILABLE){
+		if($status == SDEV_ST_USED){
 			xwritefile "$devices/$busid/usbip_sockfd", -1;
 		}else{
 			xsystem qw(/sbin/modprobe -v usbip-host);
@@ -108,8 +112,6 @@ sub remote_attach {
 sub local_attach {
 	my ($sockfd, $bus, $dev, $speed) = @_;
 	# as per linux/usb/ch9.h and drivers/usb/core/sysfs.c
-	use constant { LOW => 1, FULL => 2, HIGH => 3,
-		SUPER => 5, SUPER_PLUS => 6 };
 	my %hspeed = ( 1.5 => LOW, 12 => FULL, 480 => HIGH,
 		5000 => SUPER, 10000 => SUPER_PLUS, 20000 => SUPER_PLUS);
 	my $hspeed = $hspeed{$speed} // HIGH;
@@ -147,7 +149,6 @@ sub unbind {
 }
 
 ###############################################
-
 sub find_vhci_and_port {
 	my $speed = shift;
 	my $shub = $speed >= SUPER ? 'ss' : 'hs';
@@ -156,7 +157,7 @@ sub find_vhci_and_port {
 		while(<$h>){
 			my ($hub, $port, $sta) = split;
 			return $f =~ m{^(.*)/}, int($port)
-				if ($sta == 3 or $sta == 4) and $hub eq $shub;
+				if $sta == VDEV_ST_NULL and $hub eq $shub;
 		}
 	}
 	die "no suitable vhci port found for speed = $speed";

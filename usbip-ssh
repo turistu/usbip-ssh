@@ -154,6 +154,7 @@ sub find_vhci_and_port {
 	my $shub = $speed >= SUPER ? 'ss' : 'hs';
 	for my $f (</sys/devices/platform/vhci_hcd.*/status*>){
 		open my $h, '<', $f or warn "open $f: $!" and next;
+		<$h>; # skip header
 		while(<$h>){
 			my ($hub, $port, $sta) = split;
 			return $f =~ m{^(.*)/}, int($port)

@@ -354,9 +354,11 @@ sub list_devices {
 			my ($serial, $manufacturer, $product) =
 				map readfile("$path/$_"),
 				qw(serial manufacturer product);
+			my $driver = "[$e{DRIVER}]"
+				unless $e{DRIVER} =~ /^(?:usb|hub)$/;
 			$manufacturer =~ s/^Bluetooth v2\.0$|^USB$//;
-			my $extra = join '  ',
-				grep length, $serial, $manufacturer, $product;
+			my $extra = join '  ', grep length,
+				$serial, $manufacturer, $product, $driver;
 			printf "%s%s  %04x:%04x  %s\n",
 				$indent, $dev, $vid, $pid, $extra;
 		}

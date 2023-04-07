@@ -280,6 +280,9 @@ sub remote_script {
 	}
 
 	exit if $opt eq 'nolinger';
+	# the only purpose of lingering past this point is to unbind the
+	# usbip-host driver from the device after the other side has finished
+	# using it
 
 	require IO::Poll; sub POLLRDHUP(){ 0x2000 }
 	my $poll = new IO::Poll;

@@ -1,6 +1,6 @@
 # usbip-ssh
 This script is using the kernel's USB/IP modules and the ssh's connection
-forwarding mechanism to share usb devices between different linux machines.
+forwarding mechanism to import usb devices from another linux machine.
 
 It does not depend on the USB/IP's project userland components and does not
 require any extra software on either the local or the remote machine besides
@@ -52,6 +52,6 @@ program (the only options being a pair of pipes or a pseudo-terminal).
 
 The only way to access ssh's "channel" abstraction is by setting up a TCP port
 or unix socket forwarding, and having to use that turns everything into
-a bloody racy mess of master and slave ssh commands, temporary directories and
+a mess of master and slave ssh commands, temporary directories and
 socket files which have to be cleaned up, and extra processes which connect
 and listen to them and race against each other.

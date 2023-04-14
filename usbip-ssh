@@ -308,10 +308,8 @@ sub list_devices {
 			'030002' => 'mouse',
 			'030101' => 'kbd',	# boot
 			'030102' => 'mouse',	# boot
-		'07' => 'printer',
-		'08' => 'UMASS',
-		'09' => 'hub',
-		'0a' => 'CDC', '0e' => 'video',
+		'07' => 'printer', '08' => 'UMASS',
+		'09' => 'hub', '0a' => 'CDC', '0e' => 'video',
 		'e0' => 'wireless',
 			'e00101' => 'bluetooth',
 			'e00103' => 'RNDIS',

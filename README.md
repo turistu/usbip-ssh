@@ -18,7 +18,7 @@ Assuming that you did that, you can try:
   1-1.3  00da:8510  Telink  Wireless Receiver
       :1.0 030102  mouse  [usbhid] event5 event3 mouse0 event4 hidraw0
       :1.1 030101  kbd    [usbhid] event6 hidraw1
-# /path/to/usbip-ssh verbose=1 root@raspberry-pi Telink
+# /path/to/usbip-ssh verbose=1 -o IPQoS=lowdelay root@raspberry-pi Telink
 ...
 ```
 After which you can use the keyboard / mouse connected to the remote
@@ -50,7 +50,7 @@ make everything much harder than it has to be: ssh is not able to forward simple
 file descriptors, nor use a unix domain socket for the stdin/out of the remote
 program (the only options being a pair of pipes or a pseudo-terminal).
 
-The only way to access ssh's "channel" abstraction is by setting up a TCP port
+The only way to access ssh's "channel" abstraction is by setting up a TCP
 or unix socket forwarding, and having to use that turns everything into
 a mess of master and slave ssh commands, temporary directories and
 socket files which have to be cleaned up, and extra processes which connect

@@ -27,7 +27,7 @@ After which you can use the keyboard / mouse connected to the remote
 If that works, you set it to start automatically from an `/etc/boot.d`
 script with:
 ```
-exec /path/to/usbip-ssh verbose=1 daemon root@raspberry-pi Telink
+exec /path/to/usbip-ssh verbose=1 daemon -o IPQoS=lowdelay root@raspberry-pi Telink
 ```
 The `daemon` option will cause it to use `syslog(3)` instead of stderr and
 to keep trying (if e.g. the device/remote machine is not accessible, the device

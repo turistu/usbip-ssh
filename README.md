@@ -18,7 +18,7 @@ Assuming that you did that, you can try:
   1-1.3  00da:8510  Telink  Wireless Receiver
       :1.0 030102  mouse  [usbhid] event5 event3 mouse0 event4 hidraw0
       :1.1 030101  kbd    [usbhid] event6 hidraw1
-# /path/to/usbip-ssh verbose=1 -o IPQoS=lowdelay root@raspberry-pi Telink
+# /path/to/usbip-ssh verbose=1 root@raspberry-pi Telink
 ...
 ```
 After which you can use the keyboard / mouse connected to the remote
@@ -27,7 +27,7 @@ After which you can use the keyboard / mouse connected to the remote
 If that works, you set it to start automatically from an `/etc/boot.d`
 script with:
 ```
-exec /path/to/usbip-ssh verbose=1 daemon -o IPQoS=lowdelay root@raspberry-pi Telink
+exec /path/to/usbip-ssh verbose=1 daemon root@raspberry-pi Telink
 ```
 The `daemon` option will cause it to use `syslog(3)` instead of stderr and
 to keep trying (if e.g. the device/remote machine is not accessible, the device

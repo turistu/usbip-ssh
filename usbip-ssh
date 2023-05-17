@@ -67,7 +67,7 @@ sub xwritefile {
 	my $f = shift;
 	DEBUG "WRITE $f < @_";
 	open my $h, '>', $f or die "open> $f: $!\n";
-	print $h @_ or die "print> $f @_: $!\n";
+	syswrite $h, "@_" or die "write> $f @_: $!\n";
 }
 sub xreadfile {
 	my $f = shift;
@@ -113,7 +113,9 @@ sub local_attach {
 	my ($sockfd, $bus, $dev, $speed) = @_;
 	# as per linux/usb/ch9.h and drivers/usb/core/sysfs.c
 	my %hspeed = ( 1.5 => LOW, 12 => FULL, 480 => HIGH,
-		5000 => SUPER, 10000 => SUPER_PLUS, 20000 => SUPER_PLUS);
+		5000 => SUPER, 10000 => SUPER_PLUS, 20000 => SUPER_PLUS,
+		12 => LOW # override, FULL speed isn't supported
+	);
 	my $hspeed = $hspeed{$speed} // HIGH;
 	xsystem qw(/sbin/modprobe -v vhci-hcd);
 	my ($vhci, $port) = find_vhci_and_port($hspeed);
@@ -245,7 +247,7 @@ sub local_script {
 	my $sock = new IO::Socket::UNIX $lpath
 		or die "connect to $lpath: $!";
 	unlink $lpath or warn "unlink $lpath: $!";
-	sysread $sock, my $d, 1 or die "sysread on $lpath: $!";
+	sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
 	INFO sprintf "DEVSPEC: fd=%d bus/dev=%d/%d (%d) speed=%d",
 		$sock->fileno, $bus, $dev, $bus<<16|$dev, $speed;
 	local_attach($sock->fileno, $bus, $dev, $speed);

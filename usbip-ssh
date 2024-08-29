@@ -181,7 +181,7 @@ sub find_dev {
 		my ($vid, $pid, $serial, $manufacturer, $product) =
 			map readfile("$p/$_"),
 			qw(idVendor idProduct serial manufacturer product);
-		my $spec = sprintf "%-10s %s:%s  %s  %s  %s  %s %s",
+		my $spec = sprintf "%-10s %s:%s  %s  %s  %s",
 			$busid, $vid, $pid, $serial, $manufacturer, $product;
 		push @found, $busid if my $found = $spec =~ $rpat;
 		DEBUG sprintf "  <%d> %s", $found, $spec;
@@ -301,9 +301,7 @@ sub remote_script {
 	unbind($busid);
 }
 sub list_devices {
-	sub dv { $_[0] =~ s/(\d+)/reverse$1/ger }
 	opendir my $d, $devices or ERROR "opendir $devices: $!";
-	my $odev;
 	my %c = (
 		'01' => 'audio', '02' => 'COM',
 		'03' => 'HID',
@@ -317,51 +315,53 @@ sub list_devices {
 			'e00101' => 'bluetooth',
 			'e00103' => 'RNDIS',
 	);
-	sub read_uevent { split /[=\n]/, readfile "$_[0]/uevent" }
-	for(sort {dv($a) cmp dv($b)} readdir $d){
+	sub read_uevent { split /[=\n]/, readfile shift }
+	sub dv { $_[0] =~ s/(\d+)/pack"N",$1/ger }
+	sub nsort { sort {dv($a) cmp dv($b)} @_ }
+	for(nsort readdir $d){
 		my ($dev, $if) = /^(\d+-\d+(?:\.\d+)*)(:[\d.]+)?$/ or next;
 		my $path = "$devices/$_";
-		next if $if and $dev ne $odev;
-		$odev = $dev;
-		my %e = read_uevent $path;
-		my $indent = '  ' x ($dev =~ y/.//);
+		my %e = read_uevent "$path/uevent";
+		my $indent = $dev =~ y/.// * 2;
 		if($if){
 			my ($c, $s, $p) = map sprintf('%02x', $_),
 				split '/', $e{INTERFACE};
-			my @extra;
-			if(length(my $ifs = readfile "$path/interface")){
-				$ifs =~ s/ Interface$//;
-				push @extra, "/$ifs" unless
-					$c.$s.$p eq '080650' and
-						$ifs eq 'Bulk-In, Bulk-Out,';
+			next if $c eq '09';	# skip hub if
+			my (@extra);
+			if(my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c}){
+				push @extra, sprintf "%-7s", $ifs;
+			}elsif($ifs = readfile "$path/interface"){
+				push @extra, sprintf "/%-6s",
+					$ifs =~ s/ Interface$//r;
 			}
 			if(my $drv = $e{DRIVER}){
 				push @extra, "[$drv]";
+				my @d;
 				use File::Find;
 				find { wanted => sub {
-					next unless m{(.*)/dev(?:_id)?$}
-						and my %u = read_uevent $1;
-					push @extra,
-						$u{DEVNAME} =~ s{^input/}{}r;
+					next unless $_ =~ m#/uevent$# and
+						my %u = read_uevent $_;
+					push @d, $u{DEVNAME} =~ s{^input/}{}r
+						if exists $u{DEVNAME};
+					push @d, ":$u{RFKILL_NAME}"
+						if exists $u{RFKILL_NAME};
+					push @d, ":$u{INTERFACE}"
+						if $u{INTERFACE} =~ m#[^\d/]#;
 				}, no_chdir => 1  }, "$path/";
+				push @extra, nsort @d;
 			}
-			printf "%s    %s %s%s%s  %-5s  %s\n",
-				$indent,
-				$if, $c, $s, $p,
-				$c{$c.$s.$p} // $c{$c.$s} // $c{$c},
-				join ' ', @extra;
+			printf "%*s    %s %s%s%s %s\n",
+				$indent, '', $if, $c, $s, $p, join ' ', @extra;
 		}else{
 			my ($vid, $pid, $rev) = map hex, split '/', $e{PRODUCT};
 			my ($serial, $manufacturer, $product) =
 				map readfile("$path/$_"),
 				qw(serial manufacturer product);
-			my $driver = "[$e{DRIVER}]"
-				unless $e{DRIVER} =~ /^(?:usb|hub)$/;
-			$manufacturer =~ s/^Bluetooth v2\.0$|^USB$//;
+			my $driver = "[$e{DRIVER}]" unless $e{DRIVER} eq 'usb';
 			my $extra = join '  ', grep length,
 				$serial, $manufacturer, $product, $driver;
-			printf "%s%s  %04x:%04x  %s\n",
-				$indent, $dev, $vid, $pid, $extra;
+			printf "%*s%s  %04x:%04x  %s\n",
+				$indent, '', $dev, $vid, $pid, $extra;
 		}
 	}
 }

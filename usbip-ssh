@@ -92,7 +92,8 @@ sub xtmpdir {
 
 use constant {
 	LOW => 1, FULL => 2, HIGH => 3, SUPER => 5, SUPER_PLUS => 6,
-	SDEV_ST_AVAILABLE => 1, SDEV_ST_USED => 2, VDEV_ST_NULL => 4,
+	SDEV_ST_AVAILABLE => 1, SDEV_ST_USED => 2,
+	VDEV_ST_NULL => 4, VDEV_ST_USED => 6,
 };
 sub remote_attach {
 	my ($sockfd, $busid) = @_;
@@ -131,7 +132,7 @@ sub local_detach {
 		while(<$h>){
 			my ($hub, $port, $sta, $spd, $dev, $sock_fd, $lbusid)
 				= split;
-			next unless $sta == 6; # VDEV_ST_USED
+			next unless $sta == VDEV_ST_USED;
 			push @b, $lbusid;
 			if($lbusid =~ $busid){
 				my ($vhci) = $f =~ m{(.*)/};

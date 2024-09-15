@@ -384,8 +384,8 @@ sub persistent {
 		}
 		if($dt > $maxwait){
 			$wait = $minwait;
-		}else{
-			$wait = $maxwait if ($wait *= 4) > $maxwait;
+		}elsif(($wait *= 4) > $maxwait){
+			$wait = $maxwait;
 		}
 	}
 }
@@ -409,8 +409,7 @@ sub daemon {
 	open *STDIN, '+</dev/null' or die "open /dev/null: $!";
 	open $_, '>&', *STDIN or die "open $_ >/dev/null: $!"
 		for *STDOUT, *STDERR;
-	my @args = @_;
-	unshift @args, '-y';	# let ssh use syslog
-	persistent(@args);
+	unshift @_, '-y';	# let ssh use syslog
+	persistent(@_);
 }
 __END__

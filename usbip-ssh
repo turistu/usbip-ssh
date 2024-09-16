@@ -101,6 +101,8 @@ sub remote_attach {
 	if($status != SDEV_ST_AVAILABLE){
 		if($status == SDEV_ST_USED){
 			xwritefile "$devices/$busid/usbip_sockfd", -1;
+		}elsif(readfile("$devices/$busid/bDeviceClass") eq '09'){
+			die "$busid is a hub, and usbip-host cannot attach to a hub\n";
 		}else{
 			xsystem qw(/sbin/modprobe -v usbip-host);
 		}
@@ -240,7 +242,7 @@ sub local_script {
 		if(/^RESPONSE (.*)/){ $response = $1; last }
 		else { print STDERR "    $_" }
 	}
-	die "remote failed to attach\n" unless $response;
+	die "remote failure\n" unless $response;
 	my ($bus, $dev, $speed, $rpath) = split ' ', $response;
 	my $lpath = "$tmpdir/vhci";
 	xsystem @ssh_S, qw(-O forward), -L => "$lpath:$rpath";
@@ -248,7 +250,8 @@ sub local_script {
 	my $sock = new IO::Socket::UNIX $lpath
 		or die "connect to $lpath: $!";
 	unlink $lpath or warn "unlink $lpath: $!";
-	sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
+	defined sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
+	die "remote failure\n" unless $d eq 'T';
 	INFO sprintf "DEVSPEC: fd=%d bus/dev=%d/%d (%d) speed=%d",
 		$sock->fileno, $bus, $dev, $bus<<16|$dev, $speed;
 	local_attach($sock->fileno, $bus, $dev, $speed);
@@ -278,7 +281,7 @@ sub remote_script {
 			or ERROR "timeout waiting for connection on $path";
 		$sock = $srv->accept or ERROR "accept on $path: $!";
 		remote_attach($sock->fileno, $busid);
-		syswrite $sock, "T", 1 or ERROR "syswrite on $path: $!";
+		syswrite $sock, 'T', 1 or ERROR "syswrite on $path: $!";
 		unlink $path;
 	}
 

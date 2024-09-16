@@ -249,14 +249,13 @@ sub local_script {
 	require IO::Socket::UNIX;
 	my $sock = new IO::Socket::UNIX $lpath
 		or die "connect to $lpath: $!";
-	unlink $lpath or warn "unlink $lpath: $!";
 	defined sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
 	die "remote failure\n" unless $d eq 'T';
 	INFO sprintf "DEVSPEC: fd=%d bus/dev=%d/%d (%d) speed=%d",
 		$sock->fileno, $bus, $dev, $bus<<16|$dev, $speed;
 	local_attach($sock->fileno, $bus, $dev, $speed);
 	close $sock;
-	xsystem @ssh_S, qw(-q -O stop);	# should delete the ctl socket
+	xsystem @ssh_S, qw(-q -O stop);
 	undef $tmpdir;			# should remove the tmp dir XXX
 	print STDERR "   $_" while <$sfrom>;
 	return $pid;
@@ -282,7 +281,6 @@ sub remote_script {
 		$sock = $srv->accept or ERROR "accept on $path: $!";
 		remote_attach($sock->fileno, $busid);
 		syswrite $sock, 'T', 1 or ERROR "syswrite on $path: $!";
-		unlink $path;
 	}
 
 	exit if $opt eq 'nolinger';

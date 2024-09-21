@@ -1,5 +1,5 @@
 #! /usr/bin/perl
-our $script = sprintf qq{#line %d "%s"\n%s}, __LINE__ + 1, __FILE__, <<'__END__';eval $script; die $@ if $@; exit;
+our $script = sprintf qq{#line %d "%s"\n%s}, __LINE__ + 1, __FILE__, <<'__END__';eval $script; die $@ if $@;
 use strict;
 my $SSH = 'ssh';
 my $PERL = '/usr/bin/perl';
@@ -7,26 +7,31 @@ my $drivers = '/sys/bus/usb/drivers';
 my $devices = '/sys/bus/usb/devices';
 my $verbose;
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
-*DEBUG = sub { print STDERR "@_\n" } if $verbose;
-if($ARGV[0] eq 'remote'){
-	shift; remote_script(@ARGV);
-}elsif($ARGV[0] eq 'list'){
-	shift; list_devices(@ARGV);
-}elsif($ARGV[0] eq 'find'){
-	shift; print find_dev(@ARGV), "\n";
-}elsif($ARGV[0] eq 'unbind'){
-	shift; unbind(@ARGV);
-}elsif($ARGV[0] eq 'detach'){
-	shift; local_detach(@ARGV);
-}elsif($ARGV[0] eq 'keep'){
-	shift; persistent(@ARGV);
-}elsif($ARGV[0] eq 'daemon'){
-	shift; daemon(@ARGV); 
-}elsif(length $ARGV[0]){
-	exit xwait(local_script(@ARGV));
+sub DEBUG {} *DEBUG = sub { print STDERR @_ } if $verbose;
+sub ERR { print STDERR @_ }
+sub WARN { print STDERR @_ }
+$SIG{__DIE__} = sub { ERR "ERROR: @_"; exit 1 unless $^S };
+$SIG{__WARN__} = sub { WARN "WARNING: @_" };
+my $op = shift;
+if($op eq 'remote'){
+	remote_script(@ARGV);
+}elsif($op eq 'list'){
+	list_devices(@ARGV);
+}elsif($op eq 'find'){
+	print find_dev(@ARGV), "\n";
+}elsif($op eq 'unbind'){
+	remote_detach(find_dev(@ARGV));
+}elsif($op eq 'detach'){
+	local_detach(@ARGV);
+}elsif($op eq 'keep'){
+	persistent(@ARGV);
+}elsif($op eq 'daemon'){
+	daemon(@ARGV); 
+}elsif(length $op){
+	exit xwait(local_script($op, @ARGV));
 }else{
 	my $cmd = $0 =~ s{^.*/}{}r;
-	die <<"EOT";
+	exit print <<"EOT";
 usage:
 	$cmd USER\@HOST DEV_PATTERN
 		attach single device matching DEV_PATTERN from HOST
@@ -57,15 +62,15 @@ You can add command line options for ssh before USER\@HOST.
 EOT
 }
 
+exit;
+
 ###############################################
 
 sub readfile { open my $h, shift or return ""; local $/; <$h> =~ s/\s+$//r }
-sub DEBUG {}
-sub ERROR { die "ERROR: @_\n" }
-sub INFO { DEBUG "INFO", @_ }
+sub deb { DEBUG "@_\n" }
 sub xwritefile {
 	my $f = shift;
-	DEBUG "WRITE $f < @_";
+	deb "WRITE $f < @_";
 	open my $h, '>', $f or die "open> $f: $!\n";
 	syswrite $h, "@_" or die "write> $f @_: $!\n";
 }
@@ -75,11 +80,11 @@ sub xreadfile {
 	local $/; my $d = <$h> or die "readline< $f: $!\n";
 	$d =~ s/\s+$//;
 	die "\nempty file $f" unless length $d;
-	DEBUG "READ $f > $d";
+	deb "READ $f > $d";
 	$d;
 }
 sub xsystem {
-	DEBUG "EXEC @_";
+	deb "EXEC @_";
 	system(@_) == -1 and die "system $_[0]: $!";
 	die "system @_: status ".($? >> 8) if $?;
 }
@@ -111,6 +116,12 @@ sub remote_attach {
 		xwritefile "$drivers/usbip-host/bind", $busid;
 	}
 	xwritefile "$devices/$busid/usbip_sockfd", $sockfd;
+}
+sub remote_detach {
+	my $busid = shift;
+	xwritefile "$drivers/usbip-host/unbind", $busid;
+	xwritefile "$drivers/usbip-host/match_busid", "del $busid";
+	xwritefile "$drivers/usbip-host/rebind", $busid;
 }
 sub local_attach {
 	my ($sockfd, $bus, $dev, $speed) = @_;
@@ -146,13 +157,6 @@ sub local_detach {
 	die "no devices attached\n" unless @b;
 	die "'@_' did not match any of: @b\n" unless $n;
 }
-sub unbind {
-	my $busid = find_dev(@_);
-	xwritefile "$drivers/usbip-host/unbind", $busid;
-	xwritefile "$drivers/usbip-host/match_busid", "del $busid";
-	xwritefile "$drivers/usbip-host/rebind", $busid;
-}
-
 ###############################################
 sub find_vhci_and_port {
 	my $speed = shift;
@@ -172,11 +176,11 @@ sub find_dev {
 	my ($pat) = @_;
 	if($pat =~ /^\d+-\d+(?:\.\d+)*$/){
 		return $pat if -d "$devices/$pat";
-		ERROR "no such device $pat";
+		die "no such device $pat";
 	}
 	s/\b0*(?=[0-9a-f]+:)/\\b0*/i, s/:0*([0-9a-f]+)\b/:0*$1\\b/i, $_ = qr/$_/
 		for my $rpat = $pat;
-	INFO "looking for $rpat inside $devices";
+	deb "looking for $rpat inside $devices";
 	my @found;
 	for my $p (<$devices/[0-9]*>){
 		next unless my ($busid) = $p =~ m{/(\d+-\d+(?:\.\d+)*)$};
@@ -186,11 +190,11 @@ sub find_dev {
 		my $spec = sprintf "%-10s %s:%s  %s  %s  %s",
 			$busid, $vid, $pid, $serial, $manufacturer, $product;
 		push @found, $busid if my $found = $spec =~ $rpat;
-		DEBUG sprintf "  <%d> %s", $found, $spec;
+		deb sprintf "  %2s %s", $found && "=>", $spec;
 		
 	}
 	return $found[0] if @found == 1;
-	ERROR @found ? "multiple" : "no", " devices match '$rpat'";
+	die @found ? "multiple" : "no", " devices match '$rpat'\n";
 }
 sub xwait {
 	waitpid shift // -1, 0; $? ? ($? >> 8 or $? | 64) : 0
@@ -199,14 +203,19 @@ sub ssh_myself {
 	use IPC::Open3;
 	my ($stdout, $stderr, $ssh, $uhost, @args) = @_;
 	unshift @args, 'verbose=1' if $verbose;
-	DEBUG "EXEC @$ssh $uhost $PERL - @args";
+	deb "EXEC @$ssh $uhost $PERL - @args";
 	my $pid = open3 my $to, $_[0], $_[1], @$ssh, $uhost, $PERL, '-', @args;
 	print $to our $script or die;
-	INFO "pid=$pid";
+	deb "pid=$pid";
 	return $pid;
 }
 sub ssh_myself_simple {
 	xwait ssh_myself '>&STDOUT', '>&STDERR', @_;
+}
+sub copy_output {
+	my $i = shift; my $o = "    $i";
+	$i =~ /^ERROR:/ ? ERR $o :
+	$i =~ /^WARNING:/ ? WARN $o : DEBUG $o;
 }
 sub local_script {
 	my @ssh = $SSH;
@@ -231,8 +240,8 @@ sub local_script {
 		$SIG{__DIE__} = $old_handler;
 		use POSIX ':sys_wait_h';
 		if(waitpid($pid, WNOHANG) == 0){
-			system @ssh_S, qw(-O exit);
-			print STDERR "    $_" while <$sfrom>;
+			xsystem @ssh_S, qw(-O exit);
+			copy_output($_) while <$sfrom>;
 			xwait $pid;
 		}
 		die @_
@@ -240,7 +249,7 @@ sub local_script {
 	my $response;
 	while(<$sfrom>){
 		if(/^RESPONSE (.*)/){ $response = $1; last }
-		else { print STDERR "    $_" }
+		else { copy_output($_) }
 	}
 	die "remote failure\n" unless $response;
 	my ($bus, $dev, $speed, $rpath) = split ' ', $response;
@@ -249,15 +258,19 @@ sub local_script {
 	require IO::Socket::UNIX;
 	my $sock = new IO::Socket::UNIX $lpath
 		or die "connect to $lpath: $!";
+	deb "connect to $lpath";
 	defined sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
-	die "remote failure\n" unless $d eq 'T';
-	INFO sprintf "DEVSPEC: fd=%d bus/dev=%d/%d (%d) speed=%d",
+	unless($d eq 'T'){
+		copy_output($_) while <$sfrom>;
+		die "remote failure\n";
+	}
+	deb sprintf "devspec fd=%d bus/dev=%d/%d (%d) speed=%d",
 		$sock->fileno, $bus, $dev, $bus<<16|$dev, $speed;
 	local_attach($sock->fileno, $bus, $dev, $speed);
 	close $sock;
 	xsystem @ssh_S, qw(-q -O stop);
 	undef $tmpdir;			# should remove the tmp dir XXX
-	print STDERR "   $_" while <$sfrom>;
+	copy_output($_) while <$sfrom>;
 	return $pid;
 }
 sub remote_script {
@@ -271,16 +284,18 @@ sub remote_script {
 		my $path = "$tmpdir/host";
 		require IO::Socket::UNIX;
 		my $srv = new IO::Socket::UNIX(Listen => 1, Local => $path)
-			or ERROR "bind to $path: $!";
+			or die "bind to $path: $!";
+		deb "listen on $path";
 		printf "RESPONSE %d %d %s %s\n", $bus, $dev, $speed, $path;
 		open STDOUT, ">/dev/null" or die "open STDOUT>/dev/null: $!";
 
 		vec(my $rb, $srv->fileno, 1) = 1;
 		select($rb, undef, undef, .4)
-			or ERROR "timeout waiting for connection on $path";
-		$sock = $srv->accept or ERROR "accept on $path: $!";
+			or die "timeout waiting for connection on $path";
+		$sock = $srv->accept or die "accept on $path: $!";
+		deb "accept on $path";
 		remote_attach($sock->fileno, $busid);
-		syswrite $sock, 'T', 1 or ERROR "syswrite on $path: $!";
+		syswrite $sock, 'T', 1 or die "syswrite on $path: $!";
 	}
 
 	exit if $opt eq 'nolinger';
@@ -299,10 +314,10 @@ sub remote_script {
 	open STDIN, "</dev/null" or die "open STDIN</dev/null: $!";
 	open STDERR, ">/dev/null" or die "open STDERR>/dev/null: $!";
 	$poll->poll(-1);
-	unbind($busid);
+	remote_detach($busid);
 }
 sub list_devices {
-	opendir my $d, $devices or ERROR "opendir $devices: $!";
+	opendir my $d, $devices or die "opendir $devices: $!";
 	my %c = (
 		'01' => 'audio', '02' => 'COM',
 		'03' => 'HID',
@@ -375,12 +390,11 @@ sub persistent {
 	for(my $wait = $minwait;;){
 		my $ot = time;
 		eval { xwait local_script(@args) };
-		warn $@ if $@ and !$SIG{__DIE__};
 		my $dt = time - $ot;
-		INFO "done after $dt seconds";
+		deb "done after $dt seconds";
 		if($dt < $wait){
 			my $st = $wait / ($dt > 1 ? $dt : 1);
-			INFO "will sleep for $st seconds";
+			deb "will sleep for $st seconds";
 			sleep $st;
 		}
 		if($dt > $maxwait){
@@ -397,8 +411,8 @@ sub use_syslog {
 		my $prio = shift; syslog $prio, '%s', "@_" =~ s/\n+$//r;
 		closelog;
 	};
-	$SIG{__DIE__} = sub { $syslog->(LOG_ERR, @_) };
-	$SIG{__WARN__} = sub { $syslog->(LOG_WARNING, @_) };
+	*ERR = sub { $syslog->(LOG_ERR, @_) };
+	*WARN = sub { $syslog->(LOG_WARNING, @_) };
 	*DEBUG = sub { $syslog->(LOG_DEBUG, @_) };
 }
 sub daemon {

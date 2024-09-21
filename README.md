@@ -24,8 +24,8 @@ Assuming that you did that, you can try:
 After which you can use the keyboard / mouse connected to the remote
 `raspberry-pi` machine as if they were connected to the local machine.
 
-If that works, you set it to start automatically from an `/etc/boot.d`
-script with:
+If that works, you set it to start automatically (e.g. from an `/etc/boot.d`
+script on Debian) with:
 ```
 exec /path/to/usbip-ssh verbose=1 daemon root@raspberry-pi Telink
 ```

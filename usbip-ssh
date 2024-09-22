@@ -3,8 +3,9 @@ our $script = sprintf qq{#line %d "%s"\n%s}, __LINE__ + 1, __FILE__, <<'__END__'
 use strict;
 my $SSH = 'ssh';
 my $PERL = '/usr/bin/perl';
-my $drivers = '/sys/bus/usb/drivers';
-my $devices = '/sys/bus/usb/devices';
+my $SYSFS = '/sys';
+my $drivers = "$SYSFS/bus/usb/drivers";
+my $devices = "$SYSFS/bus/usb/devices";
 my $verbose;
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
 sub DEBUG {} *DEBUG = sub { print STDERR @_ } if $verbose;
@@ -131,7 +132,6 @@ sub local_attach {
 		12 => LOW # override, FULL speed isn't supported
 	);
 	my $hspeed = $hspeed{$speed} // HIGH;
-	xsystem qw(/sbin/modprobe -v vhci-hcd);
 	my ($vhci, $port) = find_vhci_and_port($hspeed);
 	xwritefile "$vhci/attach",
 		sprintf "%d %d %d %d", $port, $sockfd, $bus<<16|$dev, $hspeed;
@@ -139,7 +139,7 @@ sub local_attach {
 sub local_detach {
 	my $busid = join '|', map { /^all$/i ? '.*' : quotemeta } @_;
 	my (@b, $n);
-	for my $f (</sys/devices/platform/vhci_hcd.*/status*>){
+	for my $f (<$SYSFS/devices/platform/vhci_hcd.*/status*>){
 		open my $h, '<', $f or warn "open $f: $!" and next;
 		<$h>; # skip header
 		while(<$h>){
@@ -161,7 +161,9 @@ sub local_detach {
 sub find_vhci_and_port {
 	my $speed = shift;
 	my $shub = $speed >= SUPER ? 'ss' : 'hs';
-	for my $f (</sys/devices/platform/vhci_hcd.*/status*>){
+	xsystem qw(/sbin/modprobe -v vhci-hcd)
+		unless <$SYSFS/devices/platform/vhci_hcd.*>;
+	for my $f (<$SYSFS/devices/platform/vhci_hcd.*/status*>){
 		open my $h, '<', $f or warn "open $f: $!" and next;
 		<$h>; # skip header
 		while(<$h>){

@@ -8,7 +8,10 @@ my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
 my $verbose;
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
-use Sys::Syslog qw(:standard :macros);
+use constant {
+	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,
+	LOG_DAEMON => 3<<3,
+};
 my $logger = sub { shift; print STDERR @_ };
 sub DEBUG {} *DEBUG = sub { $logger->(LOG_DEBUG, @_) } if $verbose;
 $SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
@@ -221,6 +224,20 @@ sub copy_output {
 	my $o = shift =~ s/^(?=(ERROR:)|(WARNING:)|)/    /r;
 	$logger->($1 ? LOG_ERR : $2 ? LOG_WARNING : LOG_DEBUG, $o);
 }
+sub mk_unix_socket {
+	use Socket qw(AF_UNIX SOCK_STREAM SOCK_DGRAM pack_sockaddr_un);
+	my ($spec, $path) = @_;
+	my $type = $spec =~ /d/ ? SOCK_DGRAM : SOCK_STREAM;
+	socket my $sock, AF_UNIX, $type, 0 or die "socket AF_UNIX, $type: $!";
+	my $a = pack_sockaddr_un $path;
+	if($spec =~ /l/){
+		bind $sock, $a or die "bind to $path: $!";
+		listen $sock, 12 or die "listen on $path: $!";
+	}else{
+		connect $sock, $a or die "connect to $path: $!";
+	}
+	$sock
+}
 sub local_script {
 	my @ssh = $SSH;
 	while($_[0] =~ /^-/){
@@ -259,10 +276,7 @@ sub local_script {
 	my ($bus, $dev, $speed, $rpath) = split ' ', $response;
 	my $lpath = "$tmpdir/vhci";
 	xsystem @ssh_S, qw(-O forward), -L => "$lpath:$rpath";
-	require IO::Socket::UNIX;
-	my $sock = new IO::Socket::UNIX $lpath
-		or die "connect to $lpath: $!";
-	deb "connect to $lpath";
+	my $sock = mk_unix_socket(c => $lpath);
 	defined sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
 	unless($d eq 'T'){
 		copy_output($_) while <$sfrom>;
@@ -286,9 +300,7 @@ sub remote_script {
 	{
 		my $tmpdir = xtmpdir;
 		my $path = "$tmpdir/host";
-		require IO::Socket::UNIX;
-		my $srv = new IO::Socket::UNIX(Listen => 1, Local => $path)
-			or die "bind to $path: $!";
+		my $srv = mk_unix_socket(l => $path);
 		deb "listen on $path";
 		printf "RESPONSE %d %d %s %s\n", $bus, $dev, $speed, $path;
 		open STDOUT, ">/dev/null" or die "open STDOUT>/dev/null: $!";
@@ -296,7 +308,7 @@ sub remote_script {
 		vec(my $rb, $srv->fileno, 1) = 1;
 		select($rb, undef, undef, .4)
 			or die "timeout waiting for connection on $path";
-		$sock = $srv->accept or die "accept on $path: $!";
+		accept $sock, $srv or die "accept on $path: $!";
 		deb "accept on $path";
 		remote_attach($sock->fileno, $busid);
 		syswrite $sock, 'T', 1 or die "syswrite on $path: $!";
@@ -320,6 +332,18 @@ sub remote_script {
 	$poll->poll(-1);
 	remote_detach($busid);
 }
+sub read_uevent { split /[=\n]/, readfile shift }
+sub dv { $_[0] =~ s/(\d+)/pack"N",$1/ger }
+sub nsort { sort {dv($a) cmp dv($b)} @_ }
+sub find {
+	my ($d, $pat, @r) = @_;
+	for(do { my $h; opendir $h, $d and readdir $h }){
+		next if /^\./ or -l (my $s = "$d/$_");
+		push @r, find($s, $pat) if -d _;
+		push @r, $s if /\A$pat\z/;
+	}
+	@r;
+}
 sub list_devices {
 	opendir my $d, $devices or die "opendir $devices: $!";
 	my %c = (
@@ -335,9 +359,6 @@ sub list_devices {
 			'e00101' => 'bluetooth',
 			'e00103' => 'RNDIS',
 	);
-	sub read_uevent { split /[=\n]/, readfile shift }
-	sub dv { $_[0] =~ s/(\d+)/pack"N",$1/ger }
-	sub nsort { sort {dv($a) cmp dv($b)} @_ }
 	for(nsort readdir $d){
 		my ($dev, $if) = /^(\d+-\d+(?:\.\d+)*)(:[\d.]+)?$/ or next;
 		my $path = "$devices/$_";
@@ -357,17 +378,15 @@ sub list_devices {
 			if(my $drv = $e{DRIVER}){
 				push @extra, "[$drv]";
 				my @d;
-				use File::Find;
-				find { wanted => sub {
-					next unless $_ =~ m#/uevent$# and
-						my %u = read_uevent $_;
+				for(find $path, 'uevent'){
+					next unless my %u = read_uevent $_;
 					push @d, $u{DEVNAME} =~ s{^input/}{}r
 						if exists $u{DEVNAME};
 					push @d, ":$u{RFKILL_NAME}"
 						if exists $u{RFKILL_NAME};
 					push @d, ":$u{INTERFACE}"
 						if $u{INTERFACE} =~ m#[^\d/]#;
-				}, no_chdir => 1  }, "$path/";
+				}
 				push @extra, nsort @d;
 			}
 			printf "%*s    %s %s%s%s %s\n",
@@ -410,10 +429,12 @@ sub persistent {
 	}
 }
 sub use_syslog {
+	my $id = $0 =~ s{.*/}{}r;
+	my $sock = mk_unix_socket d => "/dev/log";
 	$logger = sub {
-		openlog $0 =~ s{.*/}{}r, 0, LOG_DAEMON;
-		my $prio = shift; syslog $prio, '%s', "@_" =~ s/\n+$//r;
-		closelog;
+		syswrite $sock, sprintf '<%d>%s %s: %s',
+			LOG_DAEMON|shift, substr(localtime, 4, 15), $id,
+			"@_" =~ s/\s+$//r;
 	};
 }
 sub daemon {

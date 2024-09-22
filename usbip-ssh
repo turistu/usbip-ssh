@@ -1,5 +1,5 @@
 #! /usr/bin/perl
-our $script = sprintf qq{#line %d "%s"\n%s}, __LINE__ + 1, __FILE__, <<'__END__';eval $script; die $@ if $@;
+eval (our $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__, <<'__END__') or die $@;
 use strict;
 my $SSH = 'ssh';
 my $PERL = '/usr/bin/perl';
@@ -8,11 +8,11 @@ my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
 my $verbose;
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
-sub DEBUG {} *DEBUG = sub { print STDERR @_ } if $verbose;
-sub ERR { print STDERR @_ }
-sub WARN { print STDERR @_ }
-$SIG{__DIE__} = sub { ERR "ERROR: @_"; exit 1 unless $^S };
-$SIG{__WARN__} = sub { WARN "WARNING: @_" };
+use Sys::Syslog qw(:standard :macros);
+my $logger = sub { shift; print STDERR @_ };
+sub DEBUG {} *DEBUG = sub { $logger->(LOG_DEBUG, @_) } if $verbose;
+$SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
+$SIG{__WARN__} = sub { $logger->(LOG_WARNING, "WARNING: @_") };
 my $op = shift;
 if($op eq 'remote'){
 	remote_script(@ARGV);
@@ -62,8 +62,6 @@ or the serial number.
 You can add command line options for ssh before USER\@HOST.
 EOT
 }
-
-exit;
 
 ###############################################
 
@@ -180,9 +178,12 @@ sub find_dev {
 		return $pat if -d "$devices/$pat";
 		die "no such device $pat";
 	}
-	s/\b0*(?=[0-9a-f]+:)/\\b0*/i, s/:0*([0-9a-f]+)\b/:0*$1\\b/i, $_ = qr/$_/
-		for my $rpat = $pat;
-	deb "looking for $rpat inside $devices";
+	for($pat){
+		s/\b0*([0-9a-f]+)(?=:)|:\K0*([0-9a-f]+)\b/\\b0*\L$1$2\\b/gi;
+		s/\s+/ */g;
+		$_ = qr/$_/;
+	}
+	deb "looking for $pat inside $devices";
 	my @found;
 	for my $p (<$devices/[0-9]*>){
 		next unless my ($busid) = $p =~ m{/(\d+-\d+(?:\.\d+)*)$};
@@ -191,12 +192,12 @@ sub find_dev {
 			qw(idVendor idProduct serial manufacturer product);
 		my $spec = sprintf "%-10s %s:%s  %s  %s  %s",
 			$busid, $vid, $pid, $serial, $manufacturer, $product;
-		push @found, $busid if my $found = $spec =~ $rpat;
+		push @found, $busid if my $found = $spec =~ $pat;
 		deb sprintf "  %2s %s", $found && "=>", $spec;
 		
 	}
 	return $found[0] if @found == 1;
-	die @found ? "multiple" : "no", " devices match '$rpat'\n";
+	die @found ? "multiple" : "no", " devices match '$pat'\n";
 }
 sub xwait {
 	waitpid shift // -1, 0; $? ? ($? >> 8 or $? | 64) : 0
@@ -207,17 +208,18 @@ sub ssh_myself {
 	unshift @args, 'verbose=1' if $verbose;
 	deb "EXEC @$ssh $uhost $PERL - @args";
 	my $pid = open3 my $to, $_[0], $_[1], @$ssh, $uhost, $PERL, '-', @args;
-	print $to our $script or die;
+	#print $to our $script or die "print: $!";
+	print $to join "\n", q{eval(our $script = <<'__EOT__') or die $@},
+			our $script, '__EOT__' or die "print: $!";
 	deb "pid=$pid";
 	return $pid;
 }
 sub ssh_myself_simple {
-	xwait ssh_myself '>&STDOUT', '>&STDERR', @_;
+	ssh_myself '>&STDOUT', '>&STDERR', @_;
 }
 sub copy_output {
-	my $i = shift; my $o = "    $i";
-	$i =~ /^ERROR:/ ? ERR $o :
-	$i =~ /^WARNING:/ ? WARN $o : DEBUG $o;
+	my $o = shift =~ s/^(?=(ERROR:)|(WARNING:)|)/    /r;
+	$logger->($1 ? LOG_ERR : $2 ? LOG_WARNING : LOG_DEBUG, $o);
 }
 sub local_script {
 	my @ssh = $SSH;
@@ -242,7 +244,7 @@ sub local_script {
 		$SIG{__DIE__} = $old_handler;
 		use POSIX ':sys_wait_h';
 		if(waitpid($pid, WNOHANG) == 0){
-			xsystem @ssh_S, qw(-O exit);
+			system @ssh_S, qw(-O exit);
 			copy_output($_) while <$sfrom>;
 			xwait $pid;
 		}
@@ -392,6 +394,7 @@ sub persistent {
 	for(my $wait = $minwait;;){
 		my $ot = time;
 		eval { xwait local_script(@args) };
+		$logger->(LOG_ERR, $@) if $@;
 		my $dt = time - $ot;
 		deb "done after $dt seconds";
 		if($dt < $wait){
@@ -407,15 +410,11 @@ sub persistent {
 	}
 }
 sub use_syslog {
-	use Sys::Syslog qw(:standard :macros);
-	my $syslog = sub {
+	$logger = sub {
 		openlog $0 =~ s{.*/}{}r, 0, LOG_DAEMON;
 		my $prio = shift; syslog $prio, '%s', "@_" =~ s/\n+$//r;
 		closelog;
 	};
-	*ERR = sub { $syslog->(LOG_ERR, @_) };
-	*WARN = sub { $syslog->(LOG_WARNING, @_) };
-	*DEBUG = sub { $syslog->(LOG_DEBUG, @_) };
 }
 sub daemon {
 	use POSIX qw(setsid);

@@ -249,7 +249,7 @@ sub local_script {
 	my $uhost = shift;
 	unless(@_){
 		return ssh_myself_simple [@ssh], $uhost, 'list';
-	}elsif($_[0] =~ /^(?:list|unbind|find)$/){
+	}elsif($_[0] =~ /^(?:list|unbind|find)$/ or $_[0] eq '--' and shift){
 		return ssh_myself_simple [@ssh], $uhost, @_;
 	}
 	my $tmpdir = xtmpdir;

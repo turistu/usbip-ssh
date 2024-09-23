@@ -336,13 +336,12 @@ sub read_uevent { split /[=\n]/, readfile shift }
 sub dv { $_[0] =~ s/(\d+)/pack"N",$1/ger }
 sub nsort { sort {dv($a) cmp dv($b)} @_ }
 sub find {
-	my ($d, $pat, @r) = @_;
+	my ($d, $pat, $cb) = @_;
 	for(do { my $h; opendir $h, $d and readdir $h }){
-		next if /^\./ or -l (my $s = "$d/$_");
-		push @r, find($s, $pat) if -d _;
-		push @r, $s if /\A$pat\z/;
+		next if /^\.\.?$/ or -l (my $s = "$d/$_");
+		find($s, $pat, $cb) if -d _;
+		$cb->($s) if /\A$pat\z/;
 	}
-	@r;
 }
 sub list_devices {
 	opendir my $d, $devices or die "opendir $devices: $!";
@@ -376,18 +375,17 @@ sub list_devices {
 					$ifs =~ s/ Interface$//r;
 			}
 			if(my $drv = $e{DRIVER}){
-				push @extra, "[$drv]";
 				my @d;
-				for(find $path, 'uevent'){
-					next unless my %u = read_uevent $_;
+				find $path, 'uevent', sub {
+					return unless my %u = read_uevent $_;
 					push @d, $u{DEVNAME} =~ s{^input/}{}r
 						if exists $u{DEVNAME};
 					push @d, ":$u{RFKILL_NAME}"
 						if exists $u{RFKILL_NAME};
 					push @d, ":$u{INTERFACE}"
 						if $u{INTERFACE} =~ m#[^\d/]#;
-				}
-				push @extra, nsort @d;
+				};
+				push @extra, "[$drv]", nsort @d;
 			}
 			printf "%*s    %s %s%s%s %s\n",
 				$indent, '', $if, $c, $s, $p, join ' ', @extra;

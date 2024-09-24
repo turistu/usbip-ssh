@@ -104,15 +104,14 @@ use constant {
 };
 sub remote_attach {
 	my ($sockfd, $busid) = @_;
+	die "$busid is a hub, and usbip-host cannot attach to a hub\n"
+		if readfile("$devices/$busid/bDeviceClass") eq '09';
+	xsystem qw(/sbin/modprobe -v usbip-host)
+		unless -d "$drivers/usbip-host";
 	my $status = readfile "$drivers/usbip-host/$busid/usbip_status";
-	if($status != SDEV_ST_AVAILABLE){
-		if($status == SDEV_ST_USED){
-			xwritefile "$devices/$busid/usbip_sockfd", -1;
-		}elsif(readfile("$devices/$busid/bDeviceClass") eq '09'){
-			die "$busid is a hub, and usbip-host cannot attach to a hub\n";
-		}else{
-			xsystem qw(/sbin/modprobe -v usbip-host);
-		}
+	if($status == SDEV_ST_USED){
+		xwritefile "$devices/$busid/usbip_sockfd", -1;
+	}elsif($status != SDEV_ST_AVAILABLE){
 		xwritefile "$drivers/usb/unbind", $busid;
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
 		xwritefile "$drivers/usbip-host/bind", $busid;
@@ -130,7 +129,6 @@ sub local_attach {
 	# as per linux/usb/ch9.h and drivers/usb/core/sysfs.c
 	my %hspeed = ( 1.5 => LOW, 12 => FULL, 480 => HIGH,
 		5000 => SUPER, 10000 => SUPER_PLUS, 20000 => SUPER_PLUS,
-		12 => LOW # override, FULL speed isn't supported
 	);
 	my $hspeed = $hspeed{$speed} // HIGH;
 	my ($vhci, $port) = find_vhci_and_port($hspeed);

@@ -201,14 +201,16 @@ sub find_dev {
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
 }
 sub xwait {
-	waitpid shift // -1, 0; $? ? ($? >> 8 or $? | 64) : 0
+	my ($pid, $defer) = @_;
+	while(waitpid($pid, 0) == -1){ die "waitpid $pid: $!" unless $!{EINTR} }
+	$? ? ($? >> 8 or $? | 64) : 0
 }
 sub ssh_myself {
 	use IPC::Open3;
-	my ($stdout, $stderr, $ssh, $uhost, @args) = @_;
+	my ($stdout, $stderr, $ssh_perl, @args) = @_;
 	unshift @args, 'verbose=1' if $verbose;
-	deb "EXEC @$ssh $uhost $PERL - @args";
-	my $pid = open3 my $to, $_[0], $_[1], @$ssh, $uhost, $PERL, '-', @args;
+	deb "EXEC @$ssh_perl - @args";
+	my $pid = open3 my $to, $_[0], $_[1], @$ssh_perl, '-', @args;
 	#print $to our $script or die "print: $!";
 	print $to join "\n", q{eval(our $script = <<'__EOT__') or die $@},
 			our $script, '__EOT__' or die "print: $!";
@@ -236,8 +238,16 @@ sub mk_unix_socket {
 	}
 	$sock
 }
+sub get_brackets {
+	return unless $_[0] =~ /[[({<]/; my $e = shift =~ y,[({<,])}>,r;
+	my @r; push @r, shift while $_[0] ne $e;
+}
+# my $p = defer sub { ... }; sub will be called when $p goes out of scope
+sub defer {
+	package defer; sub DESTROY { ${shift()}->() } bless \shift
+}
 sub local_script {
-	my @ssh = $SSH;
+	my @ssh; @ssh = &get_brackets or @ssh = $SSH;
 	while($_[0] =~ /^-/){
 		push @ssh, my $o = shift;
 		# see getopt(..) in ssh.c
@@ -245,30 +255,21 @@ sub local_script {
 			if $o =~ /^-[1246afgknqstvxACGKMNPTVXYy]*[bceilmopBDEFIJLOQRSwW]$/;
 	}
 	my $uhost = shift;
+	my @perl; @perl = &get_brackets or @perl = $PERL;
 	unless(@_){
-		return ssh_myself_simple [@ssh], $uhost, 'list';
-	}elsif($_[0] =~ /^(?:list|unbind|find)$/ or $_[0] eq '--' and shift){
-		return ssh_myself_simple [@ssh], $uhost, @_;
+		return ssh_myself_simple [@ssh, $uhost, @perl], 'list';
+	}elsif($_[0] =~ /^(?:list|find)$/ or $_[0] eq '--' and shift){
+		return ssh_myself_simple [@ssh, $uhost, @perl], @_;
 	}
 	my $tmpdir = xtmpdir;
 	my @ssh_S = ($ssh[0], -S => "$tmpdir/ctl", $uhost);
 	my $pid = ssh_myself my $sfrom, undef,
-		[@ssh, -S => "$tmpdir/ctl", '-M'], $uhost, 'remote', @_;
-	my $old_handler = $SIG{__DIE__};
-	$SIG{__DIE__} = sub {
-		$SIG{__DIE__} = $old_handler;
-		use POSIX ':sys_wait_h';
-		if(waitpid($pid, WNOHANG) == 0){
-			system @ssh_S, qw(-O exit);
-			copy_output($_) while <$sfrom>;
-			xwait $pid;
-		}
-		die @_
-	};
+		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, @perl], 'remote', @_;
+	my $defer = defer sub { xsystem @ssh_S, qw(-q -O exit) };
 	my $response;
 	while(<$sfrom>){
 		if(/^RESPONSE (.*)/){ $response = $1; last }
-		else { copy_output($_) }
+		copy_output($_)
 	}
 	die "remote failure\n" unless $response;
 	my ($bus, $dev, $speed, $rpath) = split ' ', $response;
@@ -287,7 +288,7 @@ sub local_script {
 	xsystem @ssh_S, qw(-q -O stop);
 	undef $tmpdir;			# should remove the tmp dir XXX
 	copy_output($_) while <$sfrom>;
-	return $pid;
+	$pid, $defer;
 }
 sub remote_script {
 	my ($spec, $opt) = @_;

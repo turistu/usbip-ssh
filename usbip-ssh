@@ -2,11 +2,11 @@
 eval (our $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__, <<'__END__') or die $@;
 use strict;
 my $SSH = 'ssh';
-my $PERL = '/usr/bin/perl';
+my $PERL = 'perl';
 my $SYSFS = '/sys';
 my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
-my $verbose;
+my ($verbose, $vhub);
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
 use constant {
 	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,
@@ -18,13 +18,13 @@ $SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
 $SIG{__WARN__} = sub { $logger->(LOG_WARNING, "WARNING: @_") };
 my $op = shift;
 if($op eq 'remote'){
-	remote_script(@ARGV);
+	remote_hub(@ARGV);
 }elsif($op eq 'list'){
 	list_devices(@ARGV);
 }elsif($op eq 'find'){
-	print find_dev(@ARGV), "\n";
+	print find_dev(@ARGV, 1, 1), "\n";
 }elsif($op eq 'unbind'){
-	remote_detach(find_dev(@ARGV));
+	remote_detach(find_dev(@ARGV, 1, 1));
 }elsif($op eq 'detach'){
 	local_detach(@ARGV);
 }elsif($op eq 'keep'){
@@ -32,13 +32,20 @@ if($op eq 'remote'){
 }elsif($op eq 'daemon'){
 	daemon(@ARGV); 
 }elsif(length $op){
-	exit xwait(local_script($op, @ARGV));
+	exit xwait(local_hub($op, @ARGV));
 }else{
 	my $cmd = $0 =~ s{^.*/}{}r;
-	exit print <<"EOT";
+	print <<"EOT"; exit 1;
 usage:
-	$cmd USER\@HOST DEV_PATTERN
-		attach single device matching DEV_PATTERN from HOST
+	$cmd USER\@HOST DEV_PATTERN [oneshot] [single]
+		attach all the present and future devices matching
+		DEV_PATTERN from HOST
+
+		use 'oneshot' to only attach existing devices and die
+		if DEV_PATTERN doesn't currently match any of them
+
+		use 'single' to die if DEV_PATTERN matches more than
+		one device
 
 	$cmd USER\@HOST [list]
 		list devices from HOST
@@ -72,9 +79,9 @@ sub readfile { open my $h, shift or return ""; local $/; <$h> =~ s/\s+$//r }
 sub deb { DEBUG "@_\n" }
 sub xwritefile {
 	my $f = shift;
-	deb "WRITE $f < @_";
 	open my $h, '>', $f or die "open> $f: $!\n";
-	syswrite $h, "@_" or die "write> $f @_: $!\n";
+	syswrite $h, "@_" or die "write $f < @_: $!\n";
+	deb "WRITE $f < @_";
 }
 sub xreadfile {
 	my $f = shift;
@@ -86,9 +93,9 @@ sub xreadfile {
 	$d;
 }
 sub xsystem {
-	deb "EXEC @_";
 	system(@_) == -1 and die "system $_[0]: $!";
 	die "system @_: status ".($? >> 8) if $?;
+	deb "EXEC @_";
 }
 sub xtmpdir {
 	require File::Temp;
@@ -106,12 +113,12 @@ sub remote_attach {
 	my ($sockfd, $busid) = @_;
 	die "$busid is a hub, and usbip-host cannot attach to a hub\n"
 		if readfile("$devices/$busid/bDeviceClass") eq '09';
-	xsystem qw(/sbin/modprobe -v usbip-host)
-		unless -d "$drivers/usbip-host";
 	my $status = readfile "$drivers/usbip-host/$busid/usbip_status";
 	if($status == SDEV_ST_USED){
 		xwritefile "$devices/$busid/usbip_sockfd", -1;
 	}elsif($status != SDEV_ST_AVAILABLE){
+		xsystem qw(/sbin/modprobe -v usbip-host)
+			unless -d "$drivers/usbip-host";
 		xwritefile "$drivers/usb/unbind", $busid;
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
 		xwritefile "$drivers/usbip-host/bind", $busid;
@@ -136,21 +143,19 @@ sub local_attach {
 		sprintf "%d %d %d %d", $port, $sockfd, $bus<<16|$dev, $hspeed;
 }
 sub local_detach {
-	my $busid = join '|', map { /^all$/i ? '.*' : quotemeta } @_;
-	my (@b, $n);
+	my (@b, $n, %b); $b{$_} = 1 for @_;
 	for my $f (<$SYSFS/devices/platform/vhci_hcd.*/status*>){
-		open my $h, '<', $f or warn "open $f: $!" and next;
+		open my $h, '<', $f or warn("open $f: $!"), next;
 		<$h>; # skip header
 		while(<$h>){
-			my ($hub, $port, $sta, $spd, $dev, $sock_fd, $lbusid)
+			my ($hub, $port, $sta, $spd, $dev, $sockfd, $busid)
 				= split;
 			next unless $sta == VDEV_ST_USED;
-			push @b, $lbusid;
-			if($lbusid =~ $busid){
-				my ($vhci) = $f =~ m{(.*)/};
-				xwritefile "$vhci/detach", int($port);
-				$n++;
-			}
+			push @b, $busid;
+			next unless $b{all} or $b{$busid};
+			my ($vhci) = $f =~ m{(.*)/};
+			xwritefile "$vhci/detach", int($port);
+			$n++;
 		}
 	}
 	die "no devices attached\n" unless @b;
@@ -173,8 +178,16 @@ sub find_vhci_and_port {
 	}
 	die "no suitable vhci port found for speed = $speed";
 }
+sub mk_dev_spec {
+	my ($p) = @_;
+	my ($vid, $pid, $serial, $manufacturer, $product) =
+		map readfile("$p/$_"),
+			qw(idVendor idProduct serial manufacturer product);
+	sprintf "%-10s %s:%s  %s  %s  %s",
+		$p =~ s{.*/}{}r, $vid, $pid, $serial, $manufacturer, $product;
+}
 sub find_dev {
-	my ($pat) = @_;
+	my ($pat, $min, $single) = @_;
 	if($pat =~ /^\d+-\d+(?:\.\d+)*$/){
 		return $pat if -d "$devices/$pat";
 		die "no such device $pat";
@@ -187,17 +200,13 @@ sub find_dev {
 	deb "looking for $pat inside $devices";
 	my @found;
 	for my $p (<$devices/[0-9]*>){
-		next unless my ($busid) = $p =~ m{/(\d+-\d+(?:\.\d+)*)$};
-		my ($vid, $pid, $serial, $manufacturer, $product) =
-			map readfile("$p/$_"),
-			qw(idVendor idProduct serial manufacturer product);
-		my $spec = sprintf "%-10s %s:%s  %s  %s  %s",
-			$busid, $vid, $pid, $serial, $manufacturer, $product;
+		next unless my ($busid) = $p =~ m{.*/([0-9.-]+)$};
+		my $spec = mk_dev_spec($p);
 		push @found, $busid if my $found = $spec =~ $pat;
 		deb sprintf "  %2s %s", $found && "=>", $spec;
-		
 	}
-	return $found[0] if @found == 1;
+	if($single){ return $found[0] if @found == 1 }
+	else{ return @found if @found >= $min }
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
 }
 sub xwait {
@@ -242,11 +251,13 @@ sub get_brackets {
 	return unless $_[0] =~ /[[({<]/; my $e = shift =~ y,[({<,])}>,r;
 	my @r; push @r, shift while $_[0] ne $e;
 }
-# my $p = defer sub { ... }; sub will be called when $p goes out of scope
+# with 'my $p = defer sub { ... }', 'sub' will be called when '$p' goes
+# out of scope
 sub defer {
-	package defer; sub DESTROY { ${shift()}->() } bless \shift
+	package defer; sub DESTROY { my $s = shift; $$s->() if $$s }
+	bless \shift
 }
-sub local_script {
+sub local_hub {
 	my @ssh; @ssh = &get_brackets or @ssh = $SSH;
 	while($_[0] =~ /^-/){
 		push @ssh, my $o = shift;
@@ -266,73 +277,121 @@ sub local_script {
 	my $pid = ssh_myself my $sfrom, undef,
 		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, @perl], 'remote', @_;
 	my $defer = defer sub { xsystem @ssh_S, qw(-q -O exit) };
-	my $response;
+	my $rpath;
 	while(<$sfrom>){
-		if(/^RESPONSE (.*)/){ $response = $1; last }
-		copy_output($_)
+		copy_output($_);
+		if(/^-Socket (.*)/){ $rpath = $1; last }
 	}
-	die "remote failure\n" unless $response;
-	my ($bus, $dev, $speed, $rpath) = split ' ', $response;
 	my $lpath = "$tmpdir/vhci";
-	xsystem @ssh_S, qw(-O forward), -L => "$lpath:$rpath";
-	my $sock = mk_unix_socket(c => $lpath);
-	defined sysread $sock, my $d, 1 or die "sysread on $lpath: $!\n";
-	unless($d eq 'T'){
-		copy_output($_) while <$sfrom>;
-		die "remote failure\n";
-	}
-	deb sprintf "devspec fd=%d bus/dev=%d/%d (%d) speed=%d",
-		$sock->fileno, $bus, $dev, $bus<<16|$dev, $speed;
-	local_attach($sock->fileno, $bus, $dev, $speed);
-	close $sock;
+	deb "listen on $lpath";
+	my $lsock = mk_unix_socket(l => $lpath);
+	xsystem @ssh_S, qw(-O forward), -R => "$rpath:$lpath";
 	xsystem @ssh_S, qw(-q -O stop);
-	undef $tmpdir;			# should remove the tmp dir XXX
-	copy_output($_) while <$sfrom>;
-	$pid, $defer;
-}
-sub remote_script {
-	my ($spec, $opt) = @_;
-	my $busid = find_dev($spec);
-	my ($bus, $dev, $speed) =
-		map xreadfile("$devices/$busid/$_"), qw(busnum devnum speed);
-	my $sock;
-	{
-		my $tmpdir = xtmpdir;
-		my $path = "$tmpdir/host";
-		my $srv = mk_unix_socket(l => $path);
-		deb "listen on $path";
-		printf "RESPONSE %d %d %s %s\n", $bus, $dev, $speed, $path;
-		open STDOUT, ">/dev/null" or die "open STDOUT>/dev/null: $!";
-
-		vec(my $rb, $srv->fileno, 1) = 1;
-		select($rb, undef, undef, .4)
-			or die "timeout waiting for connection on $path";
-		accept $sock, $srv or die "accept on $path: $!";
-		deb "accept on $path";
-		remote_attach($sock->fileno, $busid);
-		syswrite $sock, 'T', 1 or die "syswrite on $path: $!";
+	while(<$sfrom>){
+		copy_output($_);
+		if(/^-Dev (.*)/){
+			my ($bus, $dev, $speed) = split ' ', $1;
+			accept my $sock, $lsock or die "accept: $!";
+			deb "accept on $lpath = ", $sock->fileno;
+			local_attach($sock->fileno, $bus, $dev, $speed);
+		}elsif(/^-Done$/){
+			last
+		}
 	}
-
-	exit if $opt eq 'nolinger';
-	# the only purpose of lingering past this point is to unbind the
-	# usbip-host driver from the device after the other side has finished
-	# using it
-
-	require IO::Poll; sub POLLRDHUP(){ 0x2000 }
-	my $poll = new IO::Poll;
-	$poll->mask($sock, POLLRDHUP);
-
+	$pid, $defer
+}
+sub mk_uevent_socket {
+	use constant {
+		AF_NETLINK => 16, SOCK_DGRAM => 2, NETLINK_KOBJECT_UEVENT => 15
+	};
+	socket my $sock, AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT
+		or die "socket(kobject_uevent): $!";
+	bind $sock, pack 'Sx[SL]L', AF_NETLINK, 1
+		or die "bind(kobject_uevent): $!";
+	return $sock;
+}
+sub daemonize {
+	use_syslog();
+	open $_, '>/dev/null' for *STDOUT, *STDERR;
 	die "fork: $!" unless defined(my $pid = fork);
 	exit if $pid;
-	# no point in dying from a SIGPIPE
-	use_syslog();
-	open STDIN, "</dev/null" or die "open STDIN</dev/null: $!";
-	open STDERR, ">/dev/null" or die "open STDERR>/dev/null: $!";
-	$poll->poll(-1);
-	remote_detach($busid);
+}
+sub remote_hub {
+	my $pat = shift;
+	my %opt; $opt{$_} = 1 for @_;
+	open STDIN, '</dev/null';
+	$_->autoflush for *STDOUT, *STDERR;
+	my $tmpdir = xtmpdir;
+	my $rpath = "$tmpdir/host";
+	my ($uevent, %sock);
+	use IO::Poll qw(POLLIN POLLERR); sub POLLRDHUP(){ 0x2000 }
+	my $poll = new IO::Poll;
+	my @dev = find_dev($pat, $opt{oneshot}, $opt{single});
+	print "-Socket $rpath\n";
+	for(my $d = .0001; $d < 2; $d *= 2){
+		last if -S $rpath;
+		select undef, undef, undef, $d;
+	}
+	my $new_dev = sub {
+		my ($busid, $bus, $dev, $speed) = @_;
+		print "-Dev $bus $dev $speed\n";
+		my $sock = mk_unix_socket c => $rpath;
+		deb "connect to $rpath = ", $sock->fileno;
+		remote_attach($sock->fileno, $busid);
+		unless($opt{nolinger}){
+			$poll->mask($sock, POLLRDHUP);
+			$sock{$sock} = $busid;
+		}
+	};
+	for my $busid (@dev){
+		my ($bus, $dev, $speed, $class) =
+			map xreadfile("$devices/$busid/$_"),
+			qw(busnum devnum speed bDeviceClass);
+		next if $class eq '09';	# a hub XXX
+		$new_dev->($busid, $bus, $dev, $speed);
+	};
+	if($opt{oneshot}){
+		print "-Done\n";
+		undef $tmpdir; daemonize();
+	}else{
+		$poll->mask($uevent = mk_uevent_socket, POLLIN);
+		$poll->mask(*STDOUT, POLLERR);	# nb: 0 would remove it
+	}
+	while($uevent or keys %sock){
+		if($poll->poll == -1){
+			next if $!{EINTR}; die "poll: $!";
+		}
+		for($poll->handles(POLLRDHUP)){
+			eval { remote_detach(delete $sock{$_}) };
+			$logger->(LOG_ERR, $@) if $@;
+			$poll->mask($_, 0);
+		}
+		if($poll->events(*STDOUT) & POLLERR){
+			$poll->mask($_, 0) for *STDOUT, $uevent;
+			undef $uevent;
+			daemonize();
+		}
+		if($poll->handles(POLLIN)){
+			sysread $uevent, my $d, 65536
+				or die "sysread(kobject_uevent): $!";
+			my ($t, %e) = map split('='), split "\0", $d;
+			next unless
+				$e{ACTION} eq 'bind' &&
+				$e{DEVTYPE} eq 'usb_device' &&
+				$e{DRIVER} eq 'usb' &&
+				$e{TYPE} ne '9/0/1';	# not a hub
+			my $p = "$SYSFS$e{DEVPATH}";
+			my $busid = $p =~ s{.*/}{}r;
+			my $spec = mk_dev_spec($p);
+			deb "UEVENT $spec";
+			next unless $spec =~ $pat;
+			$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
+				xreadfile("$p/speed"));
+		}
+	}
 }
 sub read_uevent { split /[=\n]/, readfile shift }
-sub dv { $_[0] =~ s/(\d+)/pack"N",$1/ger }
+sub dv { $_[0] =~ y/:./.:/r =~ s/(\d+)/pack"N",$1/ger }
 sub nsort { sort {dv($a) cmp dv($b)} @_ }
 sub find {
 	my ($d, $pat, $cb) = @_;
@@ -358,7 +417,7 @@ sub list_devices {
 			'e00103' => 'RNDIS',
 	);
 	for(nsort readdir $d){
-		my ($dev, $if) = /^(\d+-\d+(?:\.\d+)*)(:[\d.]+)?$/ or next;
+		my ($dev, $if) = /^([1-9][1-9.-]*)(:[\d.]+)?$/ or next;
 		my $path = "$devices/$_";
 		my %e = read_uevent "$path/uevent";
 		my $indent = $dev =~ y/.// * 2;
@@ -367,16 +426,13 @@ sub list_devices {
 				split '/', $e{INTERFACE};
 			next if $c eq '09';	# skip hub if
 			my (@extra);
-			if(my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c}){
-				push @extra, sprintf "%-7s", $ifs;
-			}elsif($ifs = readfile "$path/interface"){
-				push @extra, sprintf "/%-6s",
-					$ifs =~ s/ Interface$//r;
-			}
+			my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c};
+			$ifs = "/$ifs"
+				if !$ifs and $ifs = readfile "$path/interface";
 			if(my $drv = $e{DRIVER}){
 				my @d;
 				find $path, 'uevent', sub {
-					return unless my %u = read_uevent $_;
+					return unless my %u = read_uevent shift;
 					push @d, $u{DEVNAME} =~ s{^input/}{}r
 						if exists $u{DEVNAME};
 					push @d, ":$u{RFKILL_NAME}"
@@ -386,18 +442,11 @@ sub list_devices {
 				};
 				push @extra, "[$drv]", nsort @d;
 			}
-			printf "%*s    %s %s%s%s %s\n",
-				$indent, '', $if, $c, $s, $p, join ' ', @extra;
+			printf "%*s    %s %s%s%s %-7s %s\n",
+				$indent, '', $if, $c, $s, $p, $ifs, join ' ', @extra;
 		}else{
-			my ($vid, $pid, $rev) = map hex, split '/', $e{PRODUCT};
-			my ($serial, $manufacturer, $product) =
-				map readfile("$path/$_"),
-				qw(serial manufacturer product);
-			my $driver = "[$e{DRIVER}]" unless $e{DRIVER} eq 'usb';
-			my $extra = join '  ', grep length,
-				$serial, $manufacturer, $product, $driver;
-			printf "%*s%s  %04x:%04x  %s\n",
-				$indent, '', $dev, $vid, $pid, $extra;
+			printf "%*s%s", $indent, '', mk_dev_spec($path);
+			print $e{DRIVER} eq 'usb' ? "\n" : "  [$e{DRIVER}]\n";
 		}
 	}
 }
@@ -409,7 +458,7 @@ sub persistent {
 	my ($minwait, $maxwait) = (.5, 60);
 	for(my $wait = $minwait;;){
 		my $ot = time;
-		eval { xwait local_script(@args) };
+		eval { xwait local_hub(@args) };
 		$logger->(LOG_ERR, $@) if $@;
 		my $dt = time - $ot;
 		deb "done after $dt seconds";

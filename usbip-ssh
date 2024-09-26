@@ -367,16 +367,13 @@ sub list_devices {
 				split '/', $e{INTERFACE};
 			next if $c eq '09';	# skip hub if
 			my (@extra);
-			if(my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c}){
-				push @extra, sprintf "%-7s", $ifs;
-			}elsif($ifs = readfile "$path/interface"){
-				push @extra, sprintf "/%-6s",
-					$ifs =~ s/ Interface$//r;
-			}
+			my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c};
+			$ifs = "/$ifs"
+				if !$ifs and $ifs = readfile "$path/interface";
 			if(my $drv = $e{DRIVER}){
 				my @d;
 				find $path, 'uevent', sub {
-					return unless my %u = read_uevent $_;
+					return unless my %u = read_uevent shift;
 					push @d, $u{DEVNAME} =~ s{^input/}{}r
 						if exists $u{DEVNAME};
 					push @d, ":$u{RFKILL_NAME}"
@@ -386,8 +383,8 @@ sub list_devices {
 				};
 				push @extra, "[$drv]", nsort @d;
 			}
-			printf "%*s    %s %s%s%s %s\n",
-				$indent, '', $if, $c, $s, $p, join ' ', @extra;
+			printf "%*s    %s %s%s%s %-7s %s\n",
+				$indent, '', $if, $c, $s, $p, $ifs, join ' ', @extra;
 		}else{
 			my ($vid, $pid, $rev) = map hex, split '/', $e{PRODUCT};
 			my ($serial, $manufacturer, $product) =

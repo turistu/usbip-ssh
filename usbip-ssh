@@ -4,9 +4,10 @@ use strict;
 my $SSH = 'ssh';
 my $PERL = 'perl';
 my $SYSFS = '/sys';
+my $modprobe = 'modprobe';
 my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
-my ($verbose, $vhub);
+my ($verbose);
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
 use constant {
 	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,
@@ -18,7 +19,7 @@ $SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
 $SIG{__WARN__} = sub { $logger->(LOG_WARNING, "WARNING: @_") };
 my $op = shift;
 if($op eq 'remote'){
-	remote_hub(@ARGV);
+	remote_script(@ARGV);
 }elsif($op eq 'list'){
 	list_devices(@ARGV);
 }elsif($op eq 'find'){
@@ -32,7 +33,7 @@ if($op eq 'remote'){
 }elsif($op eq 'daemon'){
 	daemon(@ARGV); 
 }elsif(length $op){
-	exit xwait(local_hub($op, @ARGV));
+	exit xwait(local_script($op, @ARGV));
 }else{
 	my $cmd = $0 =~ s{^.*/}{}r;
 	print <<"EOT"; exit 1;
@@ -117,7 +118,7 @@ sub remote_attach {
 	if($status == SDEV_ST_USED){
 		xwritefile "$devices/$busid/usbip_sockfd", -1;
 	}elsif($status != SDEV_ST_AVAILABLE){
-		xsystem qw(/sbin/modprobe -v usbip-host)
+		xsystem $modprobe, 'usbip-host'
 			unless -d "$drivers/usbip-host";
 		xwritefile "$drivers/usb/unbind", $busid;
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
@@ -165,7 +166,7 @@ sub local_detach {
 sub find_vhci_and_port {
 	my $speed = shift;
 	my $shub = $speed >= SUPER ? 'ss' : 'hs';
-	xsystem qw(/sbin/modprobe -v vhci-hcd)
+	xsystem $modprobe, 'vhci-hcd'
 		unless <$SYSFS/devices/platform/vhci_hcd.*>;
 	for my $f (<$SYSFS/devices/platform/vhci_hcd.*/status*>){
 		open my $h, '<', $f or warn "open $f: $!" and next;
@@ -257,7 +258,7 @@ sub defer {
 	package defer; sub DESTROY { my $s = shift; $$s->() if $$s }
 	bless \shift
 }
-sub local_hub {
+sub local_script {
 	my @ssh; @ssh = &get_brackets or @ssh = $SSH;
 	while($_[0] =~ /^-/){
 		push @ssh, my $o = shift;
@@ -316,7 +317,7 @@ sub daemonize {
 	die "fork: $!" unless defined(my $pid = fork);
 	exit if $pid;
 }
-sub remote_hub {
+sub remote_script {
 	my $pat = shift;
 	my %opt; $opt{$_} = 1 for @_;
 	open STDIN, '</dev/null';
@@ -417,7 +418,7 @@ sub list_devices {
 			'e00103' => 'RNDIS',
 	);
 	for(nsort readdir $d){
-		my ($dev, $if) = /^([1-9][1-9.-]*)(:[\d.]+)?$/ or next;
+		my ($dev, $if) = /^([1-9][\d.-]+)(:[\d.]+)?$/ or next;
 		my $path = "$devices/$_";
 		my %e = read_uevent "$path/uevent";
 		my $indent = $dev =~ y/.// * 2;
@@ -458,7 +459,7 @@ sub persistent {
 	my ($minwait, $maxwait) = (.5, 60);
 	for(my $wait = $minwait;;){
 		my $ot = time;
-		eval { xwait local_hub(@args) };
+		eval { xwait local_script(@args) };
 		$logger->(LOG_ERR, $@) if $@;
 		my $dt = time - $ot;
 		deb "done after $dt seconds";

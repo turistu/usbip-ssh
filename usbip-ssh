@@ -312,8 +312,8 @@ sub mk_uevent_socket {
 	return $sock;
 }
 sub daemonize {
-	use_syslog();
 	open $_, '>/dev/null' for *STDOUT, *STDERR;
+	use_syslog();
 	die "fork: $!" unless defined(my $pid = fork);
 	exit if $pid;
 }
@@ -362,15 +362,15 @@ sub remote_script {
 		if($poll->poll == -1){
 			next if $!{EINTR}; die "poll: $!";
 		}
-		for($poll->handles(POLLRDHUP)){
-			eval { remote_detach(delete $sock{$_}) };
-			$logger->(LOG_ERR, $@) if $@;
-			$poll->mask($_, 0);
-		}
 		if($poll->events(*STDOUT) & POLLERR){
 			$poll->mask($_, 0) for *STDOUT, $uevent;
 			undef $uevent;
 			daemonize();
+		}
+		for($poll->handles(POLLRDHUP)){
+			eval { remote_detach(delete $sock{$_}) };
+			$logger->(LOG_ERR, $@) if $@;
+			$poll->mask($_, 0);
 		}
 		if($poll->handles(POLLIN)){
 			sysread $uevent, my $d, 65536
@@ -476,12 +476,11 @@ sub persistent {
 	}
 }
 sub use_syslog {
-	my $id = $0 =~ s{.*/}{}r;
 	my $sock = mk_unix_socket d => "/dev/log";
 	$logger = sub {
 		syswrite $sock, sprintf '<%d>%s %s: %s',
-			LOG_DAEMON|shift, substr(localtime, 4, 15), $id,
-			"@_" =~ s/\s+$//r;
+			LOG_DAEMON|shift, substr(localtime, 4, 15),
+			'usbip-ssh', "@_" =~ s/\s+$//r;
 	};
 }
 sub daemon {

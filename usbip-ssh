@@ -23,9 +23,9 @@ if($op eq 'remote'){
 }elsif($op eq 'list'){
 	list_devices(@ARGV);
 }elsif($op eq 'find'){
-	print find_dev(@ARGV, 1, 1), "\n";
+	my @d = find_existing_dev(@ARGV); print "@d\n";
 }elsif($op eq 'unbind'){
-	remote_detach(find_dev(@ARGV, 1, 1));
+	remote_detach($_) for find_existing_dev(@ARGV);
 }elsif($op eq 'detach'){
 	local_detach(@ARGV);
 }elsif($op eq 'keep'){
@@ -179,36 +179,48 @@ sub find_vhci_and_port {
 	}
 	die "no suitable vhci port found for speed = $speed";
 }
+sub mk_if_spec {
+	sprintf '%02x%02x%02x', split '/', shift
+}
 sub mk_dev_spec {
-	my ($p) = @_;
+	my ($p, $ifs) = @_;
 	my ($vid, $pid, $serial, $manufacturer, $product) =
 		map readfile("$p/$_"),
 			qw(idVendor idProduct serial manufacturer product);
-	sprintf "%-10s %s:%s  %s  %s  %s",
-		$p =~ s{.*/}{}r, $vid, $pid, $serial, $manufacturer, $product;
+	my $busid = $p =~ s{.*/}{}r;
+	$ifs = join ' ', ' ',
+		map mk_if_spec(${{read_uevent($_)}}{INTERFACE}),
+			<$p/$busid:*/uevent>
+		if $ifs;
+	sprintf "%-10s %s:%s  %s  %s  %s%s",
+		$busid, $vid, $pid, $serial, $manufacturer, $product, $ifs;
+}
+sub fix_dev_pattern {
+	for(my $p = shift){
+		my $n = s/^[!-]//;
+		s/^(\d+-\d+(?:\.\d+)*)$/^\Q$1\E\\b/;
+		s/\b0*([0-9a-f]+)(?=:)|:\K0*([0-9a-f]+)\b/\\b0*\L$1$2\\b/gi;
+		s/\s+/ */g;
+		return $n ? qr/^(?!.*$_)/ : qr/$_/;
+	}
 }
 sub find_dev {
 	my ($pat, $min, $single) = @_;
-	if($pat =~ /^\d+-\d+(?:\.\d+)*$/){
-		return $pat if -d "$devices/$pat";
-		die "no such device $pat";
-	}
-	for($pat){
-		s/\b0*([0-9a-f]+)(?=:)|:\K0*([0-9a-f]+)\b/\\b0*\L$1$2\\b/gi;
-		s/\s+/ */g;
-		$_ = qr/$_/;
-	}
 	deb "looking for $pat inside $devices";
 	my @found;
-	for my $p (<$devices/[0-9]*>){
-		next unless my ($busid) = $p =~ m{.*/([0-9.-]+)$};
-		my $spec = mk_dev_spec($p);
+	for my $p (<$devices/[1-9]*>){
+		next unless my ($busid) = $p =~ m{.*/([1-9][\d.-]+)$};
+		my $spec = mk_dev_spec($p, 1);
+		next if $spec =~ /\b090000\b/; # XXX a hub
 		push @found, $busid if my $found = $spec =~ $pat;
 		deb sprintf "  %2s %s", $found && "=>", $spec;
 	}
 	if($single){ return $found[0] if @found == 1 }
 	else{ return @found if @found >= $min }
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
+}
+sub find_existing_dev {
+	find_dev(fix_dev_pattern(@_), 1);
 }
 sub xwait {
 	my ($pid, $defer) = @_;
@@ -316,10 +328,11 @@ sub daemonize {
 	use_syslog();
 	die "fork: $!" unless defined(my $pid = fork);
 	exit if $pid;
+	warn "DAEMONAZI $$\n";
 }
 sub remote_script {
-	my $pat = shift;
-	my %opt; $opt{$_} = 1 for @_;
+	my $pat = fix_dev_pattern(shift);
+	my %opt = map {$_ => 1} @_;
 	open STDIN, '</dev/null';
 	$_->autoflush for *STDOUT, *STDERR;
 	my $tmpdir = xtmpdir;
@@ -348,7 +361,7 @@ sub remote_script {
 		my ($bus, $dev, $speed, $class) =
 			map xreadfile("$devices/$busid/$_"),
 			qw(busnum devnum speed bDeviceClass);
-		next if $class eq '09';	# a hub XXX
+		next if $class eq '09';	# XXX a hub
 		$new_dev->($busid, $bus, $dev, $speed);
 	};
 	if($opt{oneshot}){
@@ -363,9 +376,9 @@ sub remote_script {
 			next if $!{EINTR}; die "poll: $!";
 		}
 		if($poll->events(*STDOUT) & POLLERR){
+			daemonize();
 			$poll->mask($_, 0) for *STDOUT, $uevent;
 			undef $uevent;
-			daemonize();
 		}
 		for($poll->handles(POLLRDHUP)){
 			eval { remote_detach(delete $sock{$_}) };
@@ -380,10 +393,10 @@ sub remote_script {
 				$e{ACTION} eq 'bind' &&
 				$e{DEVTYPE} eq 'usb_device' &&
 				$e{DRIVER} eq 'usb' &&
-				$e{TYPE} ne '9/0/1';	# not a hub
+				$e{TYPE} !~ '^9/';	# XXX a hub
 			my $p = "$SYSFS$e{DEVPATH}";
 			my $busid = $p =~ s{.*/}{}r;
-			my $spec = mk_dev_spec($p);
+			my $spec = mk_dev_spec($p, 1);
 			deb "UEVENT $spec";
 			next unless $spec =~ $pat;
 			$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},

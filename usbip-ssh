@@ -1,5 +1,6 @@
 #! /usr/bin/perl
-eval (our $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__, <<'__END__') or die $@;
+my $id = $0 =~ s{.*/}{}r;
+my $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__, <<'__EOT__'; eval $script or die $@;
 use strict;
 my $SSH = 'ssh';
 my $PERL = 'perl';
@@ -9,11 +10,11 @@ my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
 my ($verbose);
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
+my $logger = sub { shift; print STDERR @_ };
 use constant {
 	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,
 	LOG_DAEMON => 3<<3,
 };
-my $logger = sub { shift; print STDERR @_ };
 sub DEBUG {} *DEBUG = sub { $logger->(LOG_DEBUG, @_) } if $verbose;
 $SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
 $SIG{__WARN__} = sub { $logger->(LOG_WARNING, "WARNING: @_") };
@@ -35,10 +36,9 @@ if($op eq 'remote'){
 }elsif(length $op){
 	exit xwait(local_script($op, @ARGV));
 }else{
-	my $cmd = $0 =~ s{^.*/}{}r;
 	print <<"EOT"; exit 1;
 usage:
-	$cmd USER\@HOST DEV_PATTERN [oneshot] [single]
+	$id USER\@HOST DEV_PATTERN [oneshot] [single]
 		attach all the present and future devices matching
 		DEV_PATTERN from HOST
 
@@ -48,22 +48,22 @@ usage:
 		use 'single' to die if DEV_PATTERN matches more than
 		one device
 
-	$cmd USER\@HOST [list]
+	$id USER\@HOST [list]
 		list devices from HOST
 
-	$cmd USER\@HOST find DEV_PATTERN
+	$id USER\@HOST find DEV_PATTERN
 		find single device matching DEV_PATTERN on HOST
 
-	$cmd keep USER\@HOST ...
+	$id keep USER\@HOST ...
 		same commands as above, but keep trying to connect to HOST
 		and to reconnect to it if the connection is broken
 
-	$cmd daemon USER\@HOST ...
+	$id daemon USER\@HOST ...
 		same as 'keep' but detached from the tty and using syslog
 		for messages and errors
 
-	$cmd list
-	$cmd find DEV_PATTERN
+	$id list
+	$id find DEV_PATTERN
 		same commands as above on the local machine
 
 DEV_PATTERN is as returned by the 'list' command: a busid like 3-3.1, a
@@ -100,7 +100,13 @@ sub xsystem {
 }
 sub xtmpdir {
 	require File::Temp;
-	File::Temp->newdir("usbip-ssh-XXXXXX", TMPDIR => 1);
+	File::Temp->newdir("$id-XXXXXX", TMPDIR => 1);
+}
+sub xeval(&) {
+	eval { shift->(@_) }; $logger->(LOG_ERR, $@) if $@;
+}
+sub xopen(\[$*]$) {
+	my ($h, $f) = @_; open *{$h}{GLOB}, $f or die "open $f: $!";
 }
 
 ###############################################
@@ -120,7 +126,8 @@ sub remote_attach {
 	}elsif($status != SDEV_ST_AVAILABLE){
 		xsystem $modprobe, 'usbip-host'
 			unless -d "$drivers/usbip-host";
-		xwritefile "$drivers/usb/unbind", $busid;
+		xwritefile "$devices/$busid/driver/unbind", $busid
+			if -l "$devices/$busid/driver";
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
 		xwritefile "$drivers/usbip-host/bind", $busid;
 	}
@@ -144,7 +151,7 @@ sub local_attach {
 		sprintf "%d %d %d %d", $port, $sockfd, $bus<<16|$dev, $hspeed;
 }
 sub local_detach {
-	my (@b, $n, %b); $b{$_} = 1 for @_;
+	my (@b, $n); my %b = map {$_ => 1} @_;
 	for my $f (<$SYSFS/devices/platform/vhci_hcd.*/status*>){
 		open my $h, '<', $f or warn("open $f: $!"), next;
 		<$h>; # skip header
@@ -195,13 +202,13 @@ sub mk_dev_spec {
 	sprintf "%-10s %s:%s  %s  %s  %s%s",
 		$busid, $vid, $pid, $serial, $manufacturer, $product, $ifs;
 }
-sub fix_dev_pattern {
+sub mk_dev_pattern {
 	for(my $p = shift){
 		my $n = s/^[!-]//;
 		s/^(\d+-\d+(?:\.\d+)*)$/^\Q$1\E\\b/;
 		s/\b0*([0-9a-f]+)(?=:)|:\K0*([0-9a-f]+)\b/\\b0*\L$1$2\\b/gi;
-		s/\s+/ */g;
-		return $n ? qr/^(?!.*$_)/ : qr/$_/;
+		s/\s+/ +/g;
+		return $n ? qr/^(?!.*$_)/s : qr/$_/;
 	}
 }
 sub find_dev {
@@ -220,7 +227,7 @@ sub find_dev {
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
 }
 sub find_existing_dev {
-	find_dev(fix_dev_pattern(@_), 1);
+	find_dev(mk_dev_pattern(@_), 1);
 }
 sub xwait {
 	my ($pid, $defer) = @_;
@@ -231,11 +238,14 @@ sub ssh_myself {
 	use IPC::Open3;
 	my ($stdout, $stderr, $ssh_perl, @args) = @_;
 	unshift @args, 'verbose=1' if $verbose;
+	/[^\w.-]/ and s/'/'\\''/g, $_ = "'$_'" for @args;
 	deb "EXEC @$ssh_perl - @args";
 	my $pid = open3 my $to, $_[0], $_[1], @$ssh_perl, '-', @args;
-	#print $to our $script or die "print: $!";
-	print $to join "\n", q{eval(our $script = <<'__EOT__') or die $@},
-			our $script, '__EOT__' or die "print: $!";
+	syswrite $to, join "\n",
+		qq{my \$id = "\Q$id\E"; \$0 = "\Q$id [remote] @args\E";},
+		q{my $script = <<'__EOT__'; eval $script or die $@;},
+		$script, '__EOT__', '__END__'
+			or die "syswrite: $!";
 	deb "pid=$pid";
 	return $pid;
 }
@@ -261,8 +271,8 @@ sub mk_unix_socket {
 	$sock
 }
 sub get_brackets {
-	return unless $_[0] =~ /[[({<]/; my $e = shift =~ y,[({<,])}>,r;
-	my @r; push @r, shift while $_[0] ne $e;
+	return unless $_[0] =~ /[[({<]/; my $e = reverse shift =~ y,[({<,])}>,r;
+	my (@r, $r); push @r, $r while ($r = shift) ne $e; @r;
 }
 # with 'my $p = defer sub { ... }', 'sub' will be called when '$p' goes
 # out of scope
@@ -305,7 +315,7 @@ sub local_script {
 		if(/^-Dev (.*)/){
 			my ($bus, $dev, $speed) = split ' ', $1;
 			accept my $sock, $lsock or die "accept: $!";
-			deb "accept on $lpath = ", $sock->fileno;
+			deb "accept on $lpath =", $sock->fileno;
 			local_attach($sock->fileno, $bus, $dev, $speed);
 		}elsif(/^-Done$/){
 			last
@@ -324,21 +334,23 @@ sub mk_uevent_socket {
 	return $sock;
 }
 sub daemonize {
-	open $_, '>/dev/null' for *STDOUT, *STDERR;
 	use_syslog();
+	xopen *STDOUT, '>/dev/null';
+	xopen *STDERR, '>&STDOUT';
 	die "fork: $!" unless defined(my $pid = fork);
 	exit if $pid;
-	warn "DAEMONAZI $$\n";
 }
 sub remote_script {
-	my $pat = fix_dev_pattern(shift);
+	my $pat = mk_dev_pattern(shift);
 	my %opt = map {$_ => 1} @_;
-	open STDIN, '</dev/null';
-	$_->autoflush for *STDOUT, *STDERR;
+	STDOUT->autoflush;
+	xopen *STDIN, '</dev/null';
+	xopen *STDERR, '>&STDOUT';
+	$SIG{HUP} = 'IGNORE'; # handle it via POLLHUP below
 	my $tmpdir = xtmpdir;
 	my $rpath = "$tmpdir/host";
 	my ($uevent, %sock);
-	use IO::Poll qw(POLLIN POLLERR); sub POLLRDHUP(){ 0x2000 }
+	use IO::Poll qw(POLLIN POLLERR POLLHUP); sub POLLRDHUP(){ 0x2000 }
 	my $poll = new IO::Poll;
 	my @dev = find_dev($pat, $opt{oneshot}, $opt{single});
 	print "-Socket $rpath\n";
@@ -350,7 +362,7 @@ sub remote_script {
 		my ($busid, $bus, $dev, $speed) = @_;
 		print "-Dev $bus $dev $speed\n";
 		my $sock = mk_unix_socket c => $rpath;
-		deb "connect to $rpath = ", $sock->fileno;
+		deb "connect to $rpath =", $sock->fileno;
 		remote_attach($sock->fileno, $busid);
 		unless($opt{nolinger}){
 			$poll->mask($sock, POLLRDHUP);
@@ -366,23 +378,26 @@ sub remote_script {
 	};
 	if($opt{oneshot}){
 		print "-Done\n";
-		undef $tmpdir; daemonize();
+		undef $tmpdir;
+		daemonize();
 	}else{
 		$poll->mask($uevent = mk_uevent_socket, POLLIN);
-		$poll->mask(*STDOUT, POLLERR);	# nb: 0 would remove it
+		$poll->mask(*STDOUT, POLLERR);
+		# POLLERR because 0 would instead remove the fd in perl
+		# nb: this only works on Linux; POLLIN would be better but that
+		# may cause it to return it as readable when stdin == stdout
 	}
 	while($uevent or keys %sock){
 		if($poll->poll == -1){
 			next if $!{EINTR}; die "poll: $!";
 		}
-		if($poll->events(*STDOUT) & POLLERR){
+		if($poll->events(*STDOUT)){
 			daemonize();
 			$poll->mask($_, 0) for *STDOUT, $uevent;
 			undef $uevent;
 		}
 		for($poll->handles(POLLRDHUP)){
-			eval { remote_detach(delete $sock{$_}) };
-			$logger->(LOG_ERR, $@) if $@;
+			xeval { remote_detach(delete $sock{$_}) };
 			$poll->mask($_, 0);
 		}
 		if($poll->handles(POLLIN)){
@@ -472,8 +487,7 @@ sub persistent {
 	my ($minwait, $maxwait) = (.5, 60);
 	for(my $wait = $minwait;;){
 		my $ot = time;
-		eval { xwait local_script(@args) };
-		$logger->(LOG_ERR, $@) if $@;
+		xeval { xwait local_script(@args) };
 		my $dt = time - $ot;
 		deb "done after $dt seconds";
 		if($dt < $wait){
@@ -493,7 +507,7 @@ sub use_syslog {
 	$logger = sub {
 		syswrite $sock, sprintf '<%d>%s %s: %s',
 			LOG_DAEMON|shift, substr(localtime, 4, 15),
-			'usbip-ssh', "@_" =~ s/\s+$//r;
+			$id, "@_" =~ s/\s+$//r;
 	};
 }
 sub daemon {
@@ -502,10 +516,9 @@ sub daemon {
 	die "fork: $!" unless defined $pid;
 	use_syslog();
 	die "setsid: $!" unless setsid;
-	open *STDIN, '+</dev/null' or die "open /dev/null: $!";
-	open $_, '>&', *STDIN or die "open $_ >/dev/null: $!"
-		for *STDOUT, *STDERR;
+	xopen *STDIN, '+</dev/null';
+	xopen $_, '>&STDIN' for *STDOUT, *STDERR;
 	unshift @_, '-y';	# let ssh use syslog
 	persistent(@_);
 }
-__END__
+__EOT__

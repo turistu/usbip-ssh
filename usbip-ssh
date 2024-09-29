@@ -249,7 +249,7 @@ sub find_existing_dev {
 	find_dev(mk_dev_pattern(@_), 1);
 }
 sub xwait {
-	my ($pid, $defer) = @_;
+	my ($pid) = @_;
 	while(waitpid($pid, 0) == -1){ die "waitpid $pid: $!" unless $!{EINTR} }
 	$? ? ($? >> 8 or $? | 64) : 0
 }
@@ -317,12 +317,13 @@ sub local_script {
 	my @ssh_S = ($ssh[0], -S => "$tmpdir/ctl", $uhost);
 	my $pid = ssh_myself my $sfrom, undef,
 		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, @perl], 'remote', @_;
-	my $defer = defer sub { xsystem @ssh_S, qw(-q -O exit) };
+	my $defer = defer sub { deb "kill $pid"; kill 'TERM', $pid };
 	my $rpath;
 	while(<$sfrom>){
 		copy_output($_);
 		if(/^-Socket (.*)/){ $rpath = $1; last }
 	}
+	die 'remote failure' unless $rpath;
 	my $lpath = "$tmpdir/vhci";
 	deb "listen on $lpath";
 	my $lsock = mk_unix_socket(l => $lpath);
@@ -339,7 +340,8 @@ sub local_script {
 			last
 		}
 	}
-	$pid, $defer
+	undef $$defer;
+	$pid
 }
 sub mk_uevent_socket {
 	use constant { AF_NETLINK => 16, NETLINK_KOBJECT_UEVENT => 15 };

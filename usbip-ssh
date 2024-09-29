@@ -76,7 +76,7 @@ EOT
 
 ###############################################
 
-sub readfile { open my $h, shift or return ""; local $/; <$h> =~ s/\s+$//r }
+sub readfile { open my $h, shift or return; local $/; <$h> =~ s/\s+$//r }
 sub deb { DEBUG "@_\n" }
 sub xwritefile {
 	my $f = shift;
@@ -106,7 +106,7 @@ sub xeval(&) {
 	eval { shift->(@_) }; $logger->(LOG_ERR, $@) if $@;
 }
 sub xopen(\[$*]$) {
-	my ($h, $f) = @_; open *{$h}{GLOB}, $f or die "open $f: $!";
+	my ($h, $f) = @_; open $$h, $f or die "open $f: $!";
 }
 
 ###############################################
@@ -126,8 +126,10 @@ sub remote_attach {
 	}elsif($status != SDEV_ST_AVAILABLE){
 		xsystem $modprobe, 'usbip-host'
 			unless -d "$drivers/usbip-host";
-		xwritefile "$devices/$busid/driver/unbind", $busid
-			if -l "$devices/$busid/driver";
+		if(-l "$devices/$busid/driver"){
+			do_unmounts($busid);
+			xwritefile "$devices/$busid/driver/unbind", $busid;
+		}
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
 		xwritefile "$drivers/usbip-host/bind", $busid;
 	}
@@ -170,6 +172,21 @@ sub local_detach {
 	die "'@_' did not match any of: @b\n" unless $n;
 }
 ###############################################
+sub do_unmounts {
+	my ($busid) = @_;
+	my (%dev, @dir);
+	find("$devices/$busid", "dev", sub { $dev{readfile shift} = 1 });
+	return unless keys %dev;
+	xopen my $h, '</proc/self/mountinfo';
+	for(reverse <$h>){
+		my @d = split;
+		if(exists $dev{$d[2]}){
+			deb "@d[-2, 4, 2, -5]";
+			push @dir, $d[4] =~ s/\\(...)/chr oct $1/rge;
+		}
+	}
+	xsystem qw(umount --), @dir if @dir;
+}
 sub find_vhci_and_port {
 	my $speed = shift;
 	my $shub = $speed >= SUPER ? 'ss' : 'hs';
@@ -205,7 +222,7 @@ sub mk_dev_spec {
 sub mk_dev_pattern {
 	for(my $p = shift){
 		my $n = s/^[!-]//;
-		s/^(\d+-\d+(?:\.\d+)*)$/^\Q$1\E\\b/;
+		s/^(\d+-\d+(?:\.\d+)*)$/^\Q$1\E /;
 		s/\b0*([0-9a-f]+)(?=:)|:\K0*([0-9a-f]+)\b/\\b0*\L$1$2\\b/gi;
 		s/\s+/ +/g;
 		return $n ? qr/^(?!.*$_)/s : qr/$_/;
@@ -444,6 +461,8 @@ sub list_devices {
 		'e0' => 'wireless',
 			'e00101' => 'bluetooth',
 			'e00103' => 'RNDIS',
+		# 'ff' vendor
+			'ff4201' => 'adb',
 	);
 	for(nsort readdir $d){
 		my ($dev, $if) = /^([1-9][\d.-]+)(:[\d.]+)?$/ or next;
@@ -455,9 +474,8 @@ sub list_devices {
 				split '/', $e{INTERFACE};
 			next if $c eq '09';	# skip hub if
 			my (@extra);
-			my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c};
-			$ifs = "/$ifs"
-				if !$ifs and $ifs = readfile "$path/interface";
+			my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c} //
+				readfile("$path/interface") =~ s#(\S+).*#/$1#r;
 			if(my $drv = $e{DRIVER}){
 				my @d;
 				find $path, 'uevent', sub {

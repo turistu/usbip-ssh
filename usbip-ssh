@@ -172,6 +172,8 @@ sub local_detach {
 	die "'@_' did not match any of: @b\n" unless $n;
 }
 ###############################################
+
+use Socket qw(AF_UNIX SOCK_STREAM SOCK_DGRAM MSG_DONTWAIT pack_sockaddr_un);
 sub do_unmounts {
 	my ($busid) = @_;
 	my (%dev, @dir);
@@ -181,7 +183,7 @@ sub do_unmounts {
 	for(reverse <$h>){
 		my @d = split;
 		if(exists $dev{$d[2]}){
-			deb "@d[-2, 4, 2, -5]";
+			deb "@d[-2, 4, 2, -3]";
 			push @dir, $d[4] =~ s/\\(...)/chr oct $1/rge;
 		}
 	}
@@ -274,7 +276,6 @@ sub copy_output {
 	$logger->($1 ? LOG_ERR : $2 ? LOG_WARNING : LOG_DEBUG, $o);
 }
 sub mk_unix_socket {
-	use Socket qw(AF_UNIX SOCK_STREAM SOCK_DGRAM pack_sockaddr_un);
 	my ($spec, $path) = @_;
 	my $type = $spec =~ /d/ ? SOCK_DGRAM : SOCK_STREAM;
 	socket my $sock, AF_UNIX, $type, 0 or die "socket AF_UNIX, $type: $!";
@@ -341,9 +342,7 @@ sub local_script {
 	$pid, $defer
 }
 sub mk_uevent_socket {
-	use constant {
-		AF_NETLINK => 16, SOCK_DGRAM => 2, NETLINK_KOBJECT_UEVENT => 15
-	};
+	use constant { AF_NETLINK => 16, NETLINK_KOBJECT_UEVENT => 15 };
 	socket my $sock, AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT
 		or die "socket(kobject_uevent): $!";
 	bind $sock, pack 'Sx[SL]L', AF_NETLINK, 1
@@ -418,21 +417,23 @@ sub remote_script {
 			$poll->mask($_, 0);
 		}
 		if($poll->handles(POLLIN)){
-			sysread $uevent, my $d, 65536
-				or die "sysread(kobject_uevent): $!";
-			my ($t, %e) = map split('='), split "\0", $d;
-			next unless
-				$e{ACTION} eq 'bind' &&
-				$e{DEVTYPE} eq 'usb_device' &&
-				$e{DRIVER} eq 'usb' &&
-				$e{TYPE} !~ '^9/';	# XXX a hub
-			my $p = "$SYSFS$e{DEVPATH}";
-			my $busid = $p =~ s{.*/}{}r;
-			my $spec = mk_dev_spec($p, 1);
-			deb "UEVENT $spec";
-			next unless $spec =~ $pat;
-			$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
-				xreadfile("$p/speed"));
+			if(recv $uevent, my $d, 65536, MSG_DONTWAIT){
+				my ($t, %e) = map split('='), split "\0", $d;
+				next unless
+					$e{ACTION} eq 'bind' &&
+					$e{DEVTYPE} eq 'usb_device' &&
+					$e{DRIVER} eq 'usb' &&
+					$e{TYPE} !~ '^9/';	# XXX a hub
+				my $p = "$SYSFS$e{DEVPATH}";
+				my $busid = $p =~ s{.*/}{}r;
+				my $spec = mk_dev_spec($p, 1);
+				deb "UEVENT $spec";
+				next unless $spec =~ $pat;
+				$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
+					xreadfile("$p/speed"));
+			}elsif(not $!{ENOBUFS} || $!{EINTR} || $!{EWOULDBLOCK}){
+				die "sysread(kobject_uevent): $!";
+			}
 		}
 	}
 }

@@ -117,7 +117,7 @@ use constant {
 	VDEV_ST_NULL => 4, VDEV_ST_USED => 6,
 };
 sub remote_attach {
-	my ($sockfd, $busid) = @_;
+	my ($sockfd, $busid, $unmount) = @_;
 	die "$busid is a hub, and usbip-host cannot attach to a hub\n"
 		if readfile("$devices/$busid/bDeviceClass") eq '09';
 	my $status = readfile "$drivers/usbip-host/$busid/usbip_status";
@@ -127,7 +127,7 @@ sub remote_attach {
 		xsystem $modprobe, 'usbip-host'
 			unless -d "$drivers/usbip-host";
 		if(-l "$devices/$busid/driver"){
-			do_unmounts($busid);
+			do_unmounts($busid) if $unmount;
 			xwritefile "$devices/$busid/driver/unbind", $busid;
 		}
 		xwritefile "$drivers/usbip-host/match_busid", "add $busid";
@@ -288,10 +288,6 @@ sub mk_unix_socket {
 	}
 	$sock
 }
-sub get_brackets {
-	return unless $_[0] =~ /[[({<]/; my $e = reverse shift =~ y,[({<,])}>,r;
-	my (@r, $r); push @r, $r while ($r = shift) ne $e; @r;
-}
 # with 'my $p = defer sub { ... }', 'sub' will be called when '$p' goes
 # out of scope
 sub defer {
@@ -299,7 +295,7 @@ sub defer {
 	bless \shift
 }
 sub local_script {
-	my @ssh; @ssh = &get_brackets or @ssh = $SSH;
+	my @ssh = $SSH;
 	while($_[0] =~ /^-/){
 		push @ssh, my $o = shift;
 		# see getopt(..) in ssh.c
@@ -307,16 +303,15 @@ sub local_script {
 			if $o =~ /^-[1246afgknqstvxACGKMNPTVXYy]*[bceilmopBDEFIJLOQRSwW]$/;
 	}
 	my $uhost = shift;
-	my @perl; @perl = &get_brackets or @perl = $PERL;
 	unless(@_){
-		return ssh_myself_simple [@ssh, $uhost, @perl], 'list';
+		return ssh_myself_simple [@ssh, $uhost, $PERL], 'list';
 	}elsif($_[0] =~ /^(?:list|find)$/ or $_[0] eq '--' and shift){
-		return ssh_myself_simple [@ssh, $uhost, @perl], @_;
+		return ssh_myself_simple [@ssh, $uhost, $PERL], @_;
 	}
 	my $tmpdir = xtmpdir;
 	my @ssh_S = ($ssh[0], -S => "$tmpdir/ctl", $uhost);
 	my $pid = ssh_myself my $sfrom, undef,
-		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, @perl], 'remote', @_;
+		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, $PERL], 'remote', @_;
 	my $defer = defer sub { deb "kill $pid"; kill 'TERM', $pid };
 	my $rpath;
 	while(<$sfrom>){
@@ -381,7 +376,7 @@ sub remote_script {
 		print "-Dev $bus $dev $speed\n";
 		my $sock = mk_unix_socket c => $rpath;
 		deb "connect to $rpath =", $sock->fileno;
-		remote_attach($sock->fileno, $busid);
+		remote_attach($sock->fileno, $busid, !$opt{dounmount});
 		unless($opt{nolinger}){
 			$poll->mask($sock, POLLRDHUP);
 			$sock{$sock} = $busid;

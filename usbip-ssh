@@ -23,10 +23,8 @@ if($op eq 'remote'){
 	remote_script(@ARGV);
 }elsif($op eq 'list'){
 	list_devices(@ARGV);
-}elsif($op eq 'find'){
-	my @d = find_existing_dev(@ARGV); print "@d\n";
 }elsif($op eq 'unbind'){
-	remote_detach($_) for find_existing_dev(@ARGV);
+	remote_detach($_) for find_dev(mk_dev_pattern(@ARGV), 1);
 }elsif($op eq 'detach'){
 	local_detach(@ARGV);
 }elsif($op eq 'keep'){
@@ -38,33 +36,23 @@ if($op eq 'remote'){
 }else{
 	print <<"EOT"; exit 1;
 usage:
-	$id USER\@HOST DEV_PATTERN [oneshot] [single]
-		attach all the present and future devices matching
-		DEV_PATTERN from HOST
+	$id USER\@HOST
+	$id USER\@HOST list [DEV_PATTERN]
+		list usb devices from HOST
 
-		use 'oneshot' to only attach existing devices and die
-		if DEV_PATTERN doesn't currently match any of them
+	$id USER\@HOST DEV_PATTERN
+		attach single device matching DEV_PATTERN from HOST
 
-		use 'single' to die if DEV_PATTERN matches more than
-		one device
-
-	$id USER\@HOST [list]
-		list devices from HOST
-
-	$id USER\@HOST find DEV_PATTERN
-		find single device matching DEV_PATTERN on HOST
-
-	$id keep USER\@HOST ...
-		same commands as above, but keep trying to connect to HOST
+	$id keep USER\@HOST DEV_PATTERN
+		same command as above, but keep trying to connect to HOST
 		and to reconnect to it if the connection is broken
 
-	$id daemon USER\@HOST ...
+	$id daemon USER\@HOST DEV_PATTERN
 		same as 'keep' but detached from the tty and using syslog
 		for messages and errors
 
-	$id list
-	$id find DEV_PATTERN
-		same commands as above on the local machine
+	$id list [DEV_PATTERN]
+		list usb devices from the local machine
 
 DEV_PATTERN is as returned by the 'list' command: a busid like 3-3.1, a
 vip:pid like 03f0:e111, or a pattern matching the vid:pid, the product name
@@ -209,15 +197,14 @@ sub mk_if_spec {
 	sprintf '%02x%02x%02x', split '/', shift
 }
 sub mk_dev_spec {
-	my ($p, $ifs) = @_;
+	my ($p) = @_;
 	my ($vid, $pid, $serial, $manufacturer, $product) =
 		map readfile("$p/$_"),
 			qw(idVendor idProduct serial manufacturer product);
 	my $busid = $p =~ s{.*/}{}r;
-	$ifs = join ' ', ' ',
+	my $ifs = join ' ', "\t",
 		map mk_if_spec(${{read_uevent($_)}}{INTERFACE}),
-			<$p/$busid:*/uevent>
-		if $ifs;
+			<$p/$busid:*/uevent>;
 	sprintf "%-10s %s:%s  %s  %s  %s%s",
 		$busid, $vid, $pid, $serial, $manufacturer, $product, $ifs;
 }
@@ -236,7 +223,7 @@ sub find_dev {
 	my @found;
 	for my $p (<$devices/[1-9]*>){
 		next unless my ($busid) = $p =~ m{.*/([1-9][\d.-]+)$};
-		my $spec = mk_dev_spec($p, 1);
+		my $spec = mk_dev_spec($p);
 		next if $spec =~ /\b090000\b/; # XXX a hub
 		push @found, $busid if my $found = $spec =~ $pat;
 		deb sprintf "  %2s %s", $found && "=>", $spec;
@@ -244,9 +231,6 @@ sub find_dev {
 	if($single){ return $found[0] if @found == 1 }
 	else{ return @found if @found >= $min }
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
-}
-sub find_existing_dev {
-	find_dev(mk_dev_pattern(@_), 1);
 }
 sub xwait {
 	my ($pid) = @_;
@@ -318,7 +302,7 @@ sub local_script {
 		copy_output($_);
 		if(/^-Socket (.*)/){ $rpath = $1; last }
 	}
-	die 'remote failure' unless $rpath;
+	die "ssh/remote failure\n" unless $rpath;
 	my $lpath = "$tmpdir/vhci";
 	deb "listen on $lpath";
 	my $lsock = mk_unix_socket(l => $lpath);
@@ -331,7 +315,7 @@ sub local_script {
 			accept my $sock, $lsock or die "accept: $!";
 			deb "accept on $lpath =", $sock->fileno;
 			local_attach($sock->fileno, $bus, $dev, $speed);
-		}elsif(/^-Done$/){
+		}elsif(/^-Eof$/){
 			last
 		}
 	}
@@ -365,7 +349,7 @@ sub remote_script {
 	my ($uevent, %sock);
 	use IO::Poll qw(POLLIN POLLERR POLLHUP); sub POLLRDHUP(){ 0x2000 }
 	my $poll = new IO::Poll;
-	my @dev = find_dev($pat, $opt{oneshot}, $opt{single});
+	my @dev = find_dev($pat, $opt{vhub} || (1, 1));
 	print "-Socket $rpath\n";
 	for(my $d = .0001; $d < 2; $d *= 2){
 		last if -S $rpath;
@@ -389,8 +373,8 @@ sub remote_script {
 		next if $class eq '09';	# XXX a hub
 		$new_dev->($busid, $bus, $dev, $speed);
 	};
-	if($opt{oneshot}){
-		print "-Done\n";
+	unless($opt{vhub}){
+		print "-Eof\n";
 		undef $tmpdir;
 		daemonize();
 	}else{
@@ -423,7 +407,7 @@ sub remote_script {
 					$e{TYPE} !~ '^9/';	# XXX a hub
 				my $p = "$SYSFS$e{DEVPATH}";
 				my $busid = $p =~ s{.*/}{}r;
-				my $spec = mk_dev_spec($p, 1);
+				my $spec = mk_dev_spec($p);
 				deb "UEVENT $spec";
 				next unless $spec =~ $pat;
 				$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
@@ -446,7 +430,8 @@ sub find {
 	}
 }
 sub list_devices {
-	opendir my $d, $devices or die "opendir $devices: $!";
+	my $pat = mk_dev_pattern(shift);
+	my %opt = map {$_ => 1} @_;
 	my %c = (
 		'01' => 'audio', '02' => 'COM',
 		'03' => 'HID',
@@ -462,21 +447,27 @@ sub list_devices {
 		# 'ff' vendor
 			'ff4201' => 'adb',
 	);
+	opendir my $d, $devices or die "opendir $devices: $!";
 	for(nsort readdir $d){
-		my ($dev, $if) = /^([1-9][\d.-]+)(:[\d.]+)?$/ or next;
+		my ($busid) = /^([1-9][\d.-]+)$/ or next;
 		my $path = "$devices/$_";
 		my %e = read_uevent "$path/uevent";
-		my $indent = $dev =~ y/.// * 2;
-		if($if){
+		my $indent = $busid =~ y/.// * 2;
+		my $spec = mk_dev_spec($path);
+		next unless $spec =~ $pat;
+		printf "%*s%s", $indent, '', $spec =~ s/\t.*//r;
+		print $e{DRIVER} eq 'usb' ? "\n" : "  [$e{DRIVER}]\n";
+		for my $if (<$path/$busid:*>){
+			my %e = read_uevent "$if/uevent";
 			my ($c, $s, $p) = map sprintf('%02x', $_),
 				split '/', $e{INTERFACE};
 			next if $c eq '09';	# skip hub if
 			my (@extra);
 			my $ifs = $c{$c.$s.$p} // $c{$c.$s} // $c{$c} //
-				readfile("$path/interface") =~ s#(\S+).*#/$1#r;
+				readfile("$if/interface") =~ s#(\S+).*#/$1#r;
 			if(my $drv = $e{DRIVER}){
 				my @d;
-				find $path, 'uevent', sub {
+				find $if, 'uevent', sub {
 					return unless my %u = read_uevent shift;
 					push @d, $u{DEVNAME} =~ s{^input/}{}r
 						if exists $u{DEVNAME};
@@ -487,11 +478,9 @@ sub list_devices {
 				};
 				push @extra, "[$drv]", nsort @d;
 			}
-			printf "%*s    %s %s%s%s %-7s %s\n",
-				$indent, '', $if, $c, $s, $p, $ifs, join ' ', @extra;
-		}else{
-			printf "%*s%s", $indent, '', mk_dev_spec($path);
-			print $e{DRIVER} eq 'usb' ? "\n" : "  [$e{DRIVER}]\n";
+			printf "%*s    %s %s%s%s %-7s %s\n", $indent, '',
+				$if =~ s/.*:/:/r,
+				$c, $s, $p, $ifs, join ' ', @extra;
 		}
 	}
 }

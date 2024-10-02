@@ -65,6 +65,7 @@ EOT
 ###############################################
 
 sub readfile { open my $h, shift or return; local $/; <$h> =~ s/\s+$//r }
+sub read_uevent { split /[=\n]/, readfile shift }
 sub deb { DEBUG "@_\n" }
 sub xwritefile {
 	my $f = shift;
@@ -197,16 +198,13 @@ sub mk_if_spec {
 	sprintf '%02x%02x%02x', split '/', shift
 }
 sub mk_dev_spec {
-	my ($p) = @_;
-	my ($vid, $pid, $serial, $manufacturer, $product) =
-		map readfile("$p/$_"),
-			qw(idVendor idProduct serial manufacturer product);
+	my ($p, %e) = @_;
+	my @extra = map readfile("$p/$_"), qw(serial manufacturer product);
+	my ($id) = sprintf '%04x:%04x', map hex, split '/', $e{PRODUCT};
 	my $busid = $p =~ s{.*/}{}r;
-	my $ifs = join ' ', "\t",
-		map mk_if_spec(${{read_uevent($_)}}{INTERFACE}),
-			<$p/$busid:*/uevent>;
-	sprintf "%-10s %s:%s  %s  %s  %s%s",
-		$busid, $vid, $pid, $serial, $manufacturer, $product, $ifs;
+	my $ifs = join ' ', map mk_if_spec(${{read_uevent($_)}}{INTERFACE}),
+		<$p/$busid:*/uevent>;
+	"$busid  $id  $e{BUSNUM}/$e{DEVNUM}  @extra\t$ifs"
 }
 sub mk_dev_pattern {
 	for(my $p = shift){
@@ -223,7 +221,7 @@ sub find_dev {
 	my @found;
 	for my $p (<$devices/[1-9]*>){
 		next unless my ($busid) = $p =~ m{.*/([1-9][\d.-]+)$};
-		my $spec = mk_dev_spec($p);
+		my $spec = mk_dev_spec($p, read_uevent "$p/uevent");
 		next if $spec =~ /\b090000\b/; # XXX a hub
 		push @found, $busid if my $found = $spec =~ $pat;
 		deb sprintf "  %2s %s", $found && "=>", $spec;
@@ -256,8 +254,9 @@ sub ssh_myself_simple {
 	ssh_myself '>&STDOUT', '>&STDERR', @_;
 }
 sub copy_output {
-	my $o = shift =~ s/^(?=(ERROR:)|(WARNING:)|)/    /r;
-	$logger->($1 ? LOG_ERR : $2 ? LOG_WARNING : LOG_DEBUG, $o);
+	my $o = shift =~ s/^((ERROR:)|(WARNING:)|)/    /r;
+	return unless $1 or $verbose;
+	$logger->($2 ? LOG_ERR : $3 ? LOG_WARNING : LOG_DEBUG, $o);
 }
 sub mk_unix_socket {
 	my ($spec, $path) = @_;
@@ -407,7 +406,7 @@ sub remote_script {
 					$e{TYPE} !~ '^9/';	# XXX a hub
 				my $p = "$SYSFS$e{DEVPATH}";
 				my $busid = $p =~ s{.*/}{}r;
-				my $spec = mk_dev_spec($p);
+				my $spec = mk_dev_spec($p, %e);
 				deb "UEVENT $spec";
 				next unless $spec =~ $pat;
 				$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
@@ -418,7 +417,6 @@ sub remote_script {
 		}
 	}
 }
-sub read_uevent { split /[=\n]/, readfile shift }
 sub dv { $_[0] =~ y/:./.:/r =~ s/(\d+)/pack"N",$1/ger }
 sub nsort { sort {dv($a) cmp dv($b)} @_ }
 sub find {
@@ -453,7 +451,7 @@ sub list_devices {
 		my $path = "$devices/$_";
 		my %e = read_uevent "$path/uevent";
 		my $indent = $busid =~ y/.// * 2;
-		my $spec = mk_dev_spec($path);
+		my $spec = mk_dev_spec($path, %e);
 		next unless $spec =~ $pat;
 		printf "%*s%s", $indent, '', $spec =~ s/\t.*//r;
 		print $e{DRIVER} eq 'usb' ? "\n" : "  [$e{DRIVER}]\n";

@@ -13,11 +13,11 @@ so you can log in as root.
 
 Assuming that you did that, you can try:
 ```
-# /path/to/usbip-ssh root@raspbery-pi list
-1-1  2109:3431  USB2.0 Hub
-  1-1.3  00da:8510  Telink  Wireless Receiver
-      :1.0 030102  mouse  [usbhid] event5 event3 mouse0 event4 hidraw0
-      :1.1 030101  kbd    [usbhid] event6 hidraw1
+# /path/to/usbip-ssh root@raspberry-pi list
+1-1  2109:3431  001/002  USB2.0 Hub
+  1-1.4  00da:8510  001/004  Telink Wireless Receiver
+      :1.0 030102 mouse   [usbhid] event4 event5 event6 hidraw0 mouse0
+      :1.1 030101 kbd     [usbhid] event7 hidraw1
 # /path/to/usbip-ssh verbose=1 root@raspberry-pi Telink
 ...
 ```

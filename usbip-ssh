@@ -15,7 +15,7 @@ use constant {
 	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,
 	LOG_DAEMON => 3<<3,
 };
-sub DEBUG {} *DEBUG = sub { $logger->(LOG_DEBUG, @_) } if $verbose;
+sub deb {} *deb = sub { $logger->(LOG_DEBUG, "@_\n") } if $verbose;
 $SIG{__DIE__} = sub { die @_ if $^S; $logger->(LOG_ERR, "ERROR: @_"); exit 1 };
 $SIG{__WARN__} = sub { $logger->(LOG_WARNING, "WARNING: @_") };
 my $op = shift;
@@ -66,7 +66,6 @@ EOT
 
 sub readfile { open my $h, shift or return; local $/; <$h> =~ s/\s+$//r }
 sub read_uevent { split /[=\n]/, readfile shift }
-sub deb { DEBUG "@_\n" }
 sub xwritefile {
 	my $f = shift;
 	open my $h, '>', $f or die "open> $f: $!\n";
@@ -271,12 +270,12 @@ sub mk_unix_socket {
 	}
 	$sock
 }
-# with 'my $p = defer sub { ... }', 'sub' will be called when '$p' goes
-# out of scope
-sub defer {
-	package defer; sub DESTROY { my $s = shift; $$s->() if $$s }
-	bless \shift
-}
+
+# 'my $p = defer sub { ... }': 'sub' to be called when '$p' goes out of scope
+# 'undef $$p' will disarm it without calling 'sub'
+sub defer { bless \shift, 'defer' }
+sub defer::DESTROY { my $s = shift; $$s->() if $$s }
+
 sub local_script {
 	my @ssh = $SSH;
 	while($_[0] =~ /^-/){
@@ -311,6 +310,8 @@ sub local_script {
 		copy_output($_);
 		if(/^-Dev (.*)/){
 			my ($bus, $dev, $speed) = split ' ', $1;
+			vec(my $r, $lsock->fileno, 1) = 1;
+			select $r, undef, undef, .5 or die "accept timeout";
 			accept my $sock, $lsock or die "accept: $!";
 			deb "accept on $lpath =", $sock->fileno;
 			local_attach($sock->fileno, $bus, $dev, $speed);

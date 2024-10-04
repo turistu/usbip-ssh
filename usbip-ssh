@@ -295,25 +295,18 @@ sub local_script {
 	my $pid = ssh_myself my $sfrom, undef,
 		[@ssh, -S => "$tmpdir/ctl", '-M', $uhost, $PERL], 'remote', @_;
 	my $defer = defer sub { deb "kill $pid"; kill 'TERM', $pid };
+	my $lpath = "$tmpdir/vhci";
 	my $rpath;
 	while(<$sfrom>){
 		copy_output($_);
-		if(/^-Socket (.*)/){ $rpath = $1; last }
-	}
-	die "ssh/remote failure\n" unless $rpath;
-	my $lpath = "$tmpdir/vhci";
-	deb "listen on $lpath";
-	my $lsock = mk_unix_socket(l => $lpath);
-	xsystem @ssh_S, qw(-O forward), -R => "$rpath:$lpath";
-	xsystem @ssh_S, qw(-q -O stop);
-	while(<$sfrom>){
-		copy_output($_);
-		if(/^-Dev (.*)/){
+		if(/^-Socket (.*)/){
+			$rpath = $1;
+			xsystem @ssh_S, qw(-O forward), -L => "$lpath:$rpath";
+			xsystem @ssh_S, qw(-q -O stop);
+		}elsif(/^-Dev (.*)/){
 			my ($bus, $dev, $speed) = split ' ', $1;
-			vec(my $r, $lsock->fileno, 1) = 1;
-			select $r, undef, undef, .5 or die "accept timeout";
-			accept my $sock, $lsock or die "accept: $!";
-			deb "accept on $lpath =", $sock->fileno;
+			my $sock = mk_unix_socket c => $lpath;
+			deb "connect to $lpath";
 			local_attach($sock->fileno, $bus, $dev, $speed);
 		}elsif(/^-Eof$/){
 			last
@@ -344,22 +337,22 @@ sub remote_script {
 	xopen *STDIN, '</dev/null';
 	xopen *STDERR, '>&STDOUT';
 	$SIG{HUP} = 'IGNORE'; # handle it via POLLHUP below
+	my @dev = find_dev($pat, $opt{vhub} || (1, 1));
 	my $tmpdir = xtmpdir;
 	my $rpath = "$tmpdir/host";
+	my $lsock = mk_unix_socket l => $rpath;
+	print "-Socket $rpath\n";
 	my ($uevent, %sock);
 	use IO::Poll qw(POLLIN POLLERR POLLHUP); sub POLLRDHUP(){ 0x2000 }
 	my $poll = new IO::Poll;
-	my @dev = find_dev($pat, $opt{vhub} || (1, 1));
-	print "-Socket $rpath\n";
-	for(my $d = .0001; $d < 2; $d *= 2){
-		last if -S $rpath;
-		select undef, undef, undef, $d;
-	}
 	my $new_dev = sub {
 		my ($busid, $bus, $dev, $speed) = @_;
 		print "-Dev $bus $dev $speed\n";
-		my $sock = mk_unix_socket c => $rpath;
-		deb "connect to $rpath =", $sock->fileno;
+		vec(my $r, $lsock->fileno, 1) = 1;
+		select $r, undef, undef, 2
+			or die "accept timeout on $rpath: $!";
+		accept my $sock, $lsock or die "accept on $rpath: $!";
+		deb "accept on $rpath =", $sock->fileno;
 		remote_attach($sock->fileno, $busid, !$opt{dounmount});
 		unless($opt{nolinger}){
 			$poll->mask($sock, POLLRDHUP);

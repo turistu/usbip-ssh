@@ -1,14 +1,14 @@
 #! /usr/bin/perl
-my $id = $0 =~ s{.*/}{}r;
-my $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__, <<'__EOT__'; eval $script or die $@;
+my $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__ =~ s{[\pC"\\]}{?}gr, <<'__EOT__'; eval $script or die $@;
 use strict;
+my $id = __FILE__ =~ s{.*/}{}r;
 my $SSH = 'ssh';
 my $PERL = 'perl';
 my $SYSFS = '/sys';
 my $modprobe = 'modprobe';
 my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
-my ($verbose);
+my $verbose;
 eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
 my $logger = sub { shift; print STDERR @_ };
 use constant {
@@ -199,11 +199,11 @@ sub mk_if_spec {
 sub mk_dev_spec {
 	my ($p, %e) = @_;
 	my @extra = map readfile("$p/$_"), qw(serial manufacturer product);
-	my ($id) = sprintf '%04x:%04x', map hex, split '/', $e{PRODUCT};
-	my $busid = $p =~ s{.*/}{}r;
+	my ($pv) = sprintf '%04x:%04x', map hex, split '/', $e{PRODUCT};
+	my $busid = $p =~ s{.*/}{}sr;
 	my $ifs = join ' ', map mk_if_spec(${{read_uevent($_)}}{INTERFACE}),
 		<$p/$busid:*/uevent>;
-	"$busid  $id  $e{BUSNUM}/$e{DEVNUM}  @extra\t$ifs"
+	"$busid  $pv  $e{BUSNUM}/$e{DEVNUM}  @extra\t$ifs"
 }
 sub mk_dev_pattern {
 	for(my $p = shift){
@@ -237,14 +237,14 @@ sub xwait {
 sub ssh_myself {
 	use IPC::Open3;
 	my ($stdout, $stderr, $ssh_perl, @args) = @_;
+	deb "EXEC @$ssh_perl";
+	my $pid = open3 my $to, $_[0], $_[1], @$ssh_perl;
 	unshift @args, 'verbose=1' if $verbose;
-	/[^\w.-]/ and s/'/'\\''/g, $_ = "'$_'" for @args;
-	deb "EXEC @$ssh_perl - @args";
-	my $pid = open3 my $to, $_[0], $_[1], @$ssh_perl, '-', @args;
+	s/(?=[\\'])/\\/g, $_ = "'$_'," for @args;
 	syswrite $to, join "\n",
-		qq{my \$id = "\Q$id\E"; \$0 = "\Q$id [remote] @args\E";},
+		qq{\@ARGV = (@args); \$0 = "$id [remote] \@ARGV";},
 		q{my $script = <<'__EOT__'; eval $script or die $@;},
-		$script, '__EOT__', '__END__'
+		$script, '__EOT__'
 			or die "syswrite: $!";
 	deb "pid=$pid";
 	return $pid;
@@ -399,7 +399,7 @@ sub remote_script {
 					$e{DRIVER} eq 'usb' &&
 					$e{TYPE} !~ '^9/';	# XXX a hub
 				my $p = "$SYSFS$e{DEVPATH}";
-				my $busid = $p =~ s{.*/}{}r;
+				my $busid = $p =~ s{.*/}{}sr;
 				my $spec = mk_dev_spec($p, %e);
 				deb "UEVENT $spec";
 				next unless $spec =~ $pat;

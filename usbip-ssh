@@ -32,7 +32,7 @@ if($op eq 'remote'){
 }elsif($op eq 'daemon'){
 	daemon(@ARGV); 
 }elsif(length $op){
-	exit xwait(local_script($op, @ARGV));
+	exit local_script($op, @ARGV);
 }else{
 	print <<"EOT"; exit 1;
 usage:
@@ -229,11 +229,6 @@ sub find_dev {
 	else{ return @found if @found >= $min }
 	die @found ? "multiple" : "no", " devices match '$pat'\n";
 }
-sub xwait {
-	my ($pid) = @_;
-	while(waitpid($pid, 0) == -1){ die "waitpid $pid: $!" unless $!{EINTR} }
-	$? ? ($? >> 8 or $? | 64) : 0
-}
 sub ssh_myself {
 	use IPC::Open3;
 	my ($stdout, $stderr, $ssh_perl, @args) = @_;
@@ -313,7 +308,10 @@ sub local_script {
 		}
 	}
 	undef $$defer;
-	$pid
+	while(waitpid($pid, 0) == -1){ die "waitpid $pid: $!" unless $!{EINTR} }
+	my $e = $? ? ($? >> 8 or $? | 64) : 0;
+	deb "child ssh terminated, status $e";
+	$e
 }
 sub mk_uevent_socket {
 	use constant { AF_NETLINK => 16, NETLINK_KOBJECT_UEVENT => 15 };
@@ -486,7 +484,7 @@ sub persistent {
 	my ($minwait, $maxwait) = (.5, 60);
 	for(my $wait = $minwait;;){
 		my $ot = time;
-		xeval { xwait local_script(@args) };
+		xeval { local_script(@args) };
 		my $dt = time - $ot;
 		deb "done after $dt seconds";
 		if($dt < $wait){

@@ -91,7 +91,7 @@ sub xtmpdir {
 	File::Temp->newdir("$id-XXXXXX", TMPDIR => 1);
 }
 sub xeval(&) {
-	eval { shift->(@_) }; $logger->(LOG_ERR, $@) if $@;
+	eval { shift->(@_) }; warn $@ if $@;
 }
 sub xopen(\[$*]$) {
 	my ($h, $f) = @_; open $$h, $f or die "open $f: $!";
@@ -253,7 +253,7 @@ sub ssh_myself_simple {
 	ssh_myself '>&STDOUT', '>&STDERR', @_;
 }
 sub copy_output {
-	my $o = shift =~ s/^((ERROR:)|(WARNING:)|)/    /r;
+	my $o = shift =~ s/^((ERROR:)|(WARNING:)|)/    \1/r;
 	return unless $1 or $verbose;
 	$logger->($2 ? LOG_ERR : $3 ? LOG_WARNING : LOG_DEBUG, $o);
 }
@@ -387,6 +387,7 @@ sub remote_script {
 			undef $uevent;
 		}
 		for($poll->handles(POLLRDHUP)){
+			deb "rdhup on $sock{$_} ->", $_->fileno;
 			xeval { remote_detach(delete $sock{$_}) };
 			$poll->mask($_, 0);
 		}
@@ -394,7 +395,6 @@ sub remote_script {
 			if(recv $uevent, my $d, 65536, MSG_DONTWAIT){
 				my ($t, %e) = map split('='), split "\0", $d;
 				next unless
-					$e{ACTION} eq 'bind' &&
 					$e{DEVTYPE} eq 'usb_device' &&
 					$e{DRIVER} eq 'usb' &&
 					$e{TYPE} !~ '^9/';	# XXX a hub
@@ -402,7 +402,9 @@ sub remote_script {
 				my $busid = $p =~ s{.*/}{}sr;
 				my $spec = mk_dev_spec($p, %e);
 				deb "UEVENT $spec";
-				next unless $spec =~ $pat;
+				next unless
+					$e{ACTION} eq 'bind' &&
+					$spec =~ $pat;
 				$new_dev->($busid, $e{BUSNUM}, $e{DEVNUM},
 					xreadfile("$p/speed"));
 			}elsif(not $!{ENOBUFS} || $!{EINTR} || $!{EWOULDBLOCK}){

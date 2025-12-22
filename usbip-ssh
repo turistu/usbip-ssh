@@ -1,5 +1,6 @@
 #! /usr/bin/perl
 my $script = sprintf qq{#line %d "%s"\n%s;1}, __LINE__ + 1, __FILE__ =~ s{[\pC"\\]}{?}gr, <<'__EOT__'; eval $script or die $@;
+umask 077;
 use strict;
 my $id = __FILE__ =~ s{.*/}{}r;
 my $SSH = 'ssh';

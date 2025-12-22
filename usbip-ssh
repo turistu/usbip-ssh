@@ -9,7 +9,9 @@ my $modprobe = 'modprobe';
 my $drivers = "$SYSFS/bus/usb/drivers";
 my $devices = "$SYSFS/bus/usb/devices";
 my $verbose;
-eval qq{\$$1="\Q$2\E";shift} or die $@ while $ARGV[0] =~ /^(\w+)=(.*)/s;
+while($ARGV[0] =~ /^(\w+)=(.*)/s){
+	shift; ${eval "\\\$$1" or die "no such variable '$1'"} = $2
+}
 my $logger = sub { shift; print STDERR @_ };
 use constant {
 	LOG_WARNING => 4, LOG_ERR => 3, LOG_INFO => 6, LOG_DEBUG => 7,

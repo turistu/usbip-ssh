@@ -339,14 +339,14 @@ sub remote_script {
 	STDOUT->autoflush;
 	xopen *STDIN, '</dev/null';
 	xopen *STDERR, '>&STDOUT';
-	$SIG{HUP} = 'IGNORE'; # handle it via POLLHUP below
+	$SIG{HUP} = 'IGNORE'; # handle it via poll on stdout below
 	my @dev = find_dev($pat, $opt{vhub} || (1, 1));
 	my $tmpdir = xtmpdir;
 	my $rpath = "$tmpdir/host";
 	my $lsock = mk_unix_socket l => $rpath;
 	print "-Socket $rpath\n";
 	my ($uevent, %sock);
-	use IO::Poll qw(POLLIN POLLERR POLLHUP); sub POLLRDHUP(){ 0x2000 }
+	use IO::Poll qw(POLLIN POLLERR); sub POLLRDHUP(){ 0x2000 }
 	my $poll = new IO::Poll;
 	my $new_dev = sub {
 		my ($busid, $bus, $dev, $speed) = @_;
